@@ -1,0 +1,126 @@
+{
+  "theme": "light",
+  "archetype": "Pastel & Soft (Gen Z) with Neo-Brutalist E1 Twist",
+  "typography": {
+    "headings": {
+      "font": "Outfit",
+      "weight": "font-black to font-bold",
+      "tracking": "tracking-tight",
+      "scale": "text-4xl to text-6xl for Hero, text-2xl to text-3xl for H2, text-xl for cards",
+      "import_instructions": "Use next/font/google or standard Google Fonts import for 'Outfit'"
+    },
+    "body": {
+      "font": "DM Sans",
+      "weight": "font-normal to font-medium",
+      "tracking": "tracking-normal",
+      "scale": "text-base for main, text-sm for labels, uppercase with tracking-[0.2em] for overlines",
+      "import_instructions": "Use next/font/google or standard Google Fonts import for 'DM Sans'"
+    }
+  },
+  "colors": {
+    "background": "#FDFBF7",
+    "surface": "#FFFFFF",
+    "primary": "#FF5722",
+    "primary_hover": "#E64A19",
+    "accents": {
+      "lavender": "#CDB4DB",
+      "mint": "#A2D2FF",
+      "butter": "#FFC857",
+      "peach": "#FF865E"
+    },
+    "neutral_text": "#0A0A0A",
+    "borders": "#0A0A0A",
+    "rules": [
+      "No full-screen gradients.",
+      "Use #0A0A0A for all main text to ensure high APCA contrast.",
+      "Use solid pastel backgrounds with sharp borders for cards and sections."
+    ]
+  },
+  "visual enhancers": {
+    "surface_strategy": "Tactile Maximalism / Neo-Brutalist Soft",
+    "borders": "2px solid #0A0A0A on all interactive elements and containers.",
+    "shadows": "Hard offset shadows (e.g., shadow-[4px_4px_0px_#0A0A0A]). Never use blurred drop shadows.",
+    "hover_states": "Hover state pushes the element up slightly (-translate-y-1) and expands the offset shadow (shadow-[6px_6px_0px_#0A0A0A]). Active state pushes down (translate-y-1) and reduces shadow (shadow-[0px_0px_0px_#0A0A0A]).",
+    "textures": "Subtle noise overlay (opacity-5) on the main background."
+  },
+  "component name": {
+    "buttons": "Pill-shaped or rounded-xl, high contrast text, sharp borders, offset shadow.",
+    "cards": "rounded-2xl, white background, sharp border, hard shadow, generous p-6/p-8 padding.",
+    "inputs": "White background, sharp border, hard shadow on focus, no blur ring, just hard black ring.",
+    "badges": "rounded-full, bright pastel bg, 1px black border, small uppercase font."
+  },
+  "grids": {
+    "dashboard": "Bento Grid (grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6). Summary (col-span-1), Main Chart/Plan (col-span-2 or 3), Feed (col-span-1 row-span-2).",
+    "marketing": "The 'Tetris' Grid (grid-cols-1 md:grid-cols-8 lg:grid-cols-12 gap-8) with asymmetrical placements."
+  },
+  "layouts": {
+    "spacing": "Generous spacing. Use p-6, p-8, gap-6, gap-8. Containers with borders MUST have padding to prevent text collision.",
+    "navigation": "Sticky top-0 nav bar with backdrop-blur-xl and bg-[#FDFBF7]/80, separated by 2px black bottom border.",
+    "alignment": "Optical alignment over geometrical. Left-align dense content and forms. Center hero ONLY if it enhances visual hierarchy."
+  },
+  "motion": {
+    "hover": "Spring-based lift (-translate-y-1) and shadow expansion.",
+    "page_load": "Staggered fade-up for bento grid cards.",
+    "micro_interactions": "Checkboxes pop and scale. Progress bars slide smoothly. Avoid 'transition-all', specify exact properties (e.g., transition: transform 0.2s ease, box-shadow 0.2s ease)."
+  },
+  "accessibility": {
+    "contrast": "Text must meet APCA or WCAG AA 4.5:1 ratio against background. All text on colored buttons/cards must be #0A0A0A.",
+    "focus": "High contrast focus states: focus:outline-none focus:ring-2 focus:ring-[#0A0A0A] focus:ring-offset-2.",
+    "motion": "Respect prefers-reduced-motion media query.",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute in kebab-case."
+  },
+  "media": {
+    "icons": "Use iconoir-react or @phosphor-icons/react (bold or duotone variants) to match the bold UI.",
+    "empty_states": "Use abstract 3D pastel shapes as visual anchors in empty states or onboarding."
+  },
+  "3d libraries": {
+    "usage": "Optional for this phase. If used, prefer Framer Motion for pseudo-3D transforms or React Spring Parallax for layer separation on the marketing/landing page. Not required for the core dashboard."
+  },
+  "image urls": [
+    {
+      "category": "abstract_3d_shapes",
+      "url": "https://images.unsplash.com/photo-1710244182004-1c708b3f146d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzB8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMDNkJTIwcGFzdGVsJTIwc2hhcGVzfGVufDB8fHx8MTc4NDUxMDU4M3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Yellow ball and pink object on blue background. Great for Quiz or Tutor section hero illustration."
+    },
+    {
+      "category": "abstract_3d_shapes",
+      "url": "https://images.pexels.com/photos/13180245/pexels-photo-13180245.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Smooth pastel abstract 3D shapes. Good for empty states or dashboard welcome card background."
+    },
+    {
+      "category": "student_portraits",
+      "url": "https://images.unsplash.com/photo-1514369118554-e20d93546b30?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwxfHx5b3VuZyUyMHN0dWRlbnQlMjBzdHVkeWluZyUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NDUxMDU4M3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Woman writing on book. Good for a testimonial or landing page feature block."
+    },
+    {
+      "category": "student_portraits",
+      "url": "https://images.unsplash.com/photo-1620829813573-7c9e1877706f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwyfHx5b3VuZyUyMHN0dWRlbnQlMjBzdHVkeWluZyUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NDUxMDU4M3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Man in gray crew neck using laptop. Suitable for 'AI Study Planner' section."
+    }
+  ],
+  "instructions_to_main_agent": [
+    "This is a Neo-Brutalist Soft app targeted at Gen Z (high school students). The UI should NOT feel like a boring corporate SaaS.",
+    "Apply 2px solid black borders (border-2 border-[#0A0A0A]) and hard offset shadows (shadow-[4px_4px_0px_#0A0A0A]) to buttons, cards, and input fields.",
+    "Do NOT use transparent backgrounds for the header or floating elements; use solid colors or heavy glassmorphism with borders.",
+    "Use pure HTML and Tailwind for complex structural marketing layouts; rely on customized Shadcn components (using pure JS/React, NOT TSX) for complex logic like Modals, Calendars, Dropdowns, and Tables.",
+    "Never center text by default, except in strict marketing hero sections.",
+    "Include 'data-testid' on all buttons, forms, and key elements to comply with testing rules."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy and offset shadows.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur).",
+    "You MUST NOT apply universal transition. Eg: 'transition: all'. Always add transitions for specific interactive elements like button, input excluding transforms.",
+    "You MUST NOT center align the app container, ie do not add '.App { text-align: center; }' in the css file.",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
+    "NEVER use AI assistant Emoji characters like \ud83e\udd16\ud83e\udde0\ud83d\udcad\ud83d\udca1\ud83d\udd2e\ud83c\udfaf etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations. Static = dead.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Main agent relies on these image URLs. Missing categories = main agent will use placeholder text which is FORBIDDEN.",
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Create new components that match the style and conventions of existing components when needed.",
+    "Use sonner for toasts. Sonner component are located in /app/src/components/ui/sonner.js (Note: use .js extension, not .tsx)."
+  ]
+}

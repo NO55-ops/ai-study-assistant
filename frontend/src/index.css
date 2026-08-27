@@ -1,0 +1,157 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&family=DM+Sans:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --bg-main: #FDFBF7;
+    --bg-surface: #FFFFFF;
+    --text-main: #0A0A0A;
+    --border-main: #0A0A0A;
+    --shadow-color: #0A0A0A;
+    --muted-bg: #FDFBF7;
+    --accent: #FF5722;
+    --accent-hover: #E64A19;
+    --font-scale: 1;
+}
+
+html {
+    font-size: calc(16px * var(--font-scale, 1));
+}
+
+body {
+    margin: 0;
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: var(--bg-main);
+    color: var(--text-main);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    color: var(--text-main);
+}
+
+code {
+    font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+
+[data-reduce-motion="true"] * {
+    animation: none !important;
+    transition: none !important;
+}
+
+/* Dark mode overrides for hardcoded Tailwind arbitrary values */
+[data-theme="dark"] .text-\[\#0A0A0A\] {
+    color: #FDFBF7;
+}
+
+[data-theme="dark"] .bg-white {
+    background-color: #1A1A1A;
+    color: #FDFBF7;
+}
+
+[data-theme="dark"] .border-\[\#0A0A0A\] {
+    border-color: #FDFBF7;
+}
+
+[data-theme="dark"] .bg-\[\#FDFBF7\] {
+    background-color: #0F0E0C;
+    color: #FDFBF7;
+}
+
+/* Card class explicit override for dark mode readability - cards keep dark text/bg for good contrast within */
+[data-theme="dark"] .card {
+    background: #1A1A1A;
+    color: #FDFBF7;
+    box-shadow: 4px 4px 0px #FDFBF7;
+}
+
+[data-theme="dark"] .card:hover {
+    box-shadow: 6px 6px 0px #FDFBF7;
+}
+
+[data-theme="dark"] .input-field {
+    background: #1A1A1A;
+    color: #FDFBF7;
+    border-color: #FDFBF7;
+}
+
+[data-theme="dark"] .input-field:focus {
+    box-shadow: 4px 4px 0px #FDFBF7;
+}
+
+[data-theme="dark"] .btn-secondary {
+    background: #1A1A1A;
+    color: #FDFBF7;
+    box-shadow: 4px 4px 0px #FDFBF7;
+}
+
+[data-theme="dark"] .btn-secondary:hover {
+    box-shadow: 6px 6px 0px #FDFBF7;
+}
+
+[data-theme="dark"] .btn-primary {
+    box-shadow: 4px 4px 0px #FDFBF7;
+}
+
+[data-theme="dark"] .btn-primary:hover {
+    box-shadow: 6px 6px 0px #FDFBF7;
+}
+
+[data-theme="dark"] .neo-shadow {
+    box-shadow: 4px 4px 0px #FDFBF7;
+}
+
+[data-theme="dark"] .neo-shadow-lg {
+    box-shadow: 6px 6px 0px #FDFBF7;
+}
+
+@layer utilities {
+    .neo-shadow {
+        box-shadow: 4px 4px 0px var(--shadow-color);
+    }
+    .neo-shadow-lg {
+        box-shadow: 6px 6px 0px var(--shadow-color);
+    }
+    .neo-shadow-none {
+        box-shadow: 0px 0px 0px var(--shadow-color);
+    }
+    .bg-app { background: var(--bg-main); }
+    .bg-surface { background: var(--bg-surface); }
+    .text-app { color: var(--text-main); }
+    .border-app { border-color: var(--border-main); }
+    .accent-bg { background: var(--accent); }
+    .accent-text { color: var(--accent); }
+    .noise-overlay {
+        position: relative;
+    }
+    .noise-overlay::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        opacity: 0.05;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+        pointer-events: none;
+    }
+}
+
+@layer base {
+    * {
+        border-color: var(--border-main);
+    }
+}
+
+@layer base {
+    [data-debug-wrapper="true"] {
+        display: contents !important;
+    }
+}
