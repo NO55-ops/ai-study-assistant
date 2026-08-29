@@ -61,6 +61,18 @@ def normalize_supabase_id(record: Optional[Dict[str, Any]]) -> Optional[Dict[str
     return normalized
 
 
+def ensure_response_id(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    normalized = normalize_supabase_id(record)
+    if normalized is None:
+        return None
+    if "id" not in normalized and "_id" in normalized:
+        normalized["id"] = normalized["_id"]
+    normalized.pop("_id", None)
+    if "id" not in normalized:
+        normalized["id"] = str(uuid.uuid4())
+    return normalized
+
+
 class MemoryResult:
     def __init__(self, data: Optional[List[Dict[str, Any]]] = None, count: Optional[int] = None):
         self.data = data or []
@@ -362,15 +374,23 @@ STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", str(ROOT_DIR / "storage")))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 APP_NAME = "ai-study-assistant"
 
-# Ollama configuration
-OPENAI_API_KEY = "ollama"
+# AI provider configuration
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or (OPENROUTER_API_KEY or "ollama")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:12b")
-OPENAI_MODEL = OLLAMA_MODEL
+if OPENROUTER_API_KEY:
+    OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
+    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "openrouter/free")
+elif OPENAI_BASE_URL:
+    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", os.environ.get("OLLAMA_MODEL", "gemma4:12b"))
+else:
+    OPENAI_BASE_URL = "http://localhost:11434/v1"
+    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", os.environ.get("OLLAMA_MODEL", "gemma4:12b"))
 
 openai_client = AsyncOpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="ollama",
+    base_url=OPENAI_BASE_URL,
+    api_key=OPENAI_API_KEY,
 )
 
 
@@ -402,7 +422,7 @@ async def llm_generate(system: str, prompt: str, model: Optional[str] = None) ->
         "Keep your response concise, well-structured, and easy for students to understand."
     )
     resp = await openai_client.chat.completions.create(
-        model=model or OLLAMA_MODEL,
+       model=model or OPENAI_MODEL,
         messages=[
             {"role": "system", "content": english_system + " " + system},
             {"role": "user", "content": prompt},
@@ -425,7 +445,7 @@ async def llm_stream(system: str, prompt: str, model: Optional[str] = None):
     )
 
     stream = await openai_client.chat.completions.create(
-        model=model or OLLAMA_MODEL,
+        model=model or OPENAI_MODEL,
         messages=[
             {"role": "system", "content": english_system + " " + system},
             {"role": "user", "content": prompt},
@@ -898,7 +918,7 @@ async def generate_summary(req: SummaryRequest, request: Request):
     
     existing = await db.summaries.find_one({"document_id": req.document_id, "summary_type": req.summary_type})
     if existing:
-        existing["id"] = str(existing.pop("_id"))
+        existing = ensure_response_id(existing) or existing
         return existing
     
     text = doc.get("extracted_text", "")
@@ -1093,9 +1113,12 @@ Format as JSON:
 async def list_flashcards(request: Request):
     user = await get_current_user(request)
     flashcards = await db.flashcard_sets.find({"user_id": user["id"]}).to_list(1000)
+    normalized_flashcards: List[Dict[str, Any]] = []
     for f in flashcards:
-        f["id"] = f.pop("_id")
-    return flashcards
+        normalized = ensure_response_id(f)
+        if normalized is not None:
+            normalized_flashcards.append(normalized)
+    return normalized_flashcards
 
 # Study planner
 @api_router.post("/ai/study-plan")
@@ -1168,7 +1191,7 @@ async def get_current_study_plan(request: Request):
     plan = await db.study_plans.find_one({"user_id": user["id"]}, sort=[("created_at", -1)])
     if not plan:
         return {"plan_data": {"weeks": []}}
-    plan["id"] = plan.pop("_id")
+    plan = ensure_response_id(plan) or plan
     return plan
 
 # Progress tracking
@@ -1262,9 +1285,12 @@ async def create_note(req: NoteRequest, request: Request):
 async def list_notes(request: Request):
     user = await get_current_user(request)
     notes = await db.notes.find({"user_id": user["id"]}).sort([("is_pinned", -1), ("updated_at", -1)]).to_list(1000)
+    normalized_notes: List[Dict[str, Any]] = []
     for n in notes:
-        n["id"] = n.pop("_id")
-    return notes
+        normalized = ensure_response_id(n)
+        if normalized is not None:
+            normalized_notes.append(normalized)
+    return normalized_notes
 
 @api_router.get("/notes/{note_id}")
 async def get_note(note_id: str, request: Request):
@@ -1272,7 +1298,7 @@ async def get_note(note_id: str, request: Request):
     note = await db.notes.find_one({"_id": note_id, "user_id": user["id"]})
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    note["id"] = note.pop("_id")
+    note = ensure_response_id(note) or note
     return note
 
 @api_router.put("/notes/{note_id}")
@@ -1295,7 +1321,7 @@ async def update_note(note_id: str, req: NoteRequest, request: Request):
     note = await db.notes.find_one({"_id": note_id})
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    note["id"] = note.pop("_id")
+    note = ensure_response_id(note) or note
     return note
 
 @api_router.delete("/notes/{note_id}")
@@ -1315,9 +1341,13 @@ async def get_dashboard(request: Request):
         {"extracted_text": 0}
     ).sort("created_at", -1).limit(5).to_list(5)
     
+    normalized_recent_docs: List[Dict[str, Any]] = []
     for d in recent_docs:
-        d["id"] = d.pop("_id")
-    
+        normalized = ensure_response_id(d)
+        if normalized is not None:
+            normalized_recent_docs.append(normalized)
+    recent_docs = normalized_recent_docs
+
     stats = await get_progress_stats(request)
     
     study_plan = await db.study_plans.find_one({"user_id": user["id"]}, sort=[("created_at", -1)])
@@ -1391,7 +1421,8 @@ async def seed_admin():
 @app.on_event("startup")
 async def startup():
     logger.info(f"Local storage directory: {STORAGE_DIR}")
-    logger.info(f"Using Ollama model: {OLLAMA_MODEL}")
+    logger.info(f"Using OpenRouter model: {OPENAI_MODEL}")
+
 
     await seed_admin()
 
