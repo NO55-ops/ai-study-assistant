@@ -65,19 +65,19 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const completeOnboarding = async (onboardingData) => {
-    try {
-      await axios.post(`${API}/auth/onboarding`, onboardingData, { withCredentials: true });
-      await checkAuth();
-      return { success: true };
-    } catch (e) {
-      return { success: false, error: formatApiErrorDetail(e.response?.data?.detail) || e.message };
-    }
-  };
+  const completeOnboarding = useCallback(async (onboardingData) => {
+  try {
+    await axios.post(`${API}/auth/onboarding`, onboardingData, { withCredentials: true });
+    await checkAuth();
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: formatApiErrorDetail(e.response?.data?.detail) || e.message };
+  }
+}, [checkAuth]);
 
   const value = useMemo(
     () => ({ user, loading, login, register, logout, checkAuth, completeOnboarding }),
-    [user, loading, checkAuth]
+    [user, loading, checkAuth, completeOnboarding]
   );
 
   return (
