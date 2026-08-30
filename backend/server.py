@@ -376,15 +376,17 @@ APP_NAME = "ai-study-assistant"
 
 # AI provider configuration
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or (OPENROUTER_API_KEY or "ollama")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
 if OPENROUTER_API_KEY:
+    OPENAI_API_KEY = OPENROUTER_API_KEY
     OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
     OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "openrouter/free")
 elif OPENAI_BASE_URL:
     OPENAI_MODEL = os.environ.get("OPENAI_MODEL", os.environ.get("OLLAMA_MODEL", "gemma4:12b"))
 else:
+    OPENAI_API_KEY = OPENAI_API_KEY or "ollama"
     OPENAI_BASE_URL = "http://localhost:11434/v1"
     OPENAI_MODEL = os.environ.get("OPENAI_MODEL", os.environ.get("OLLAMA_MODEL", "gemma4:12b"))
 
