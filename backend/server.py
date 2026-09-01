@@ -1094,20 +1094,21 @@ Format as JSON:
             flashcard_content = flashcard_content.split("```json")[1].split("```")[0].strip()
         elif "```" in flashcard_content:
             flashcard_content = flashcard_content.split("```")[1].split("```")[0].strip()
-        
+
         flashcard_data = json.loads(flashcard_content)
     except Exception:
         flashcard_data = {"flashcards": [], "error": "Failed to parse flashcards"}
-    
+
     flashcard_set_id = str(uuid.uuid4())
     flashcard_doc = {
         "id": flashcard_set_id,
         "user_id": user["id"],
         "document_id": req.document_id,
+        "document_name": doc.get("filename") or doc.get("name") or "Untitled Document",
         "flashcards": flashcard_data.get("flashcards", []),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.flashcard_sets.insert_one(flashcard_doc)
     return normalize_supabase_id(flashcard_doc) or dict(flashcard_doc)
 
