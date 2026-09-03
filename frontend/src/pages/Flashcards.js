@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { flashcardService } from '../services/api';
 import { Layers, ArrowLeft, ArrowRight, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
@@ -11,6 +12,7 @@ const Flashcards = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const navigate = useNavigate();
     const fetchFlashcards = async () => {
       try {
         const { data } = await flashcardService.list();
@@ -109,16 +111,37 @@ const Flashcards = () => {
             >
               {flashcardSets.map((set, idx) => (
                 <option key={set.id} value={set.id}>
-                  Set {idx + 1} - {set.document_id}
-                </option>
+  {set.document_name || `Set ${idx + 1}`}
+</option>
               ))}
             </select>
           </div>
         )}
 
         {selectedSet && currentCard && (
-          <>
-            <div className="mb-6 flex items-center justify-between">
+  <>
+    <div className="mb-4 flex items-center justify-between gap-4">
+  <div>
+    <h2
+      className="text-2xl font-black text-[#0A0A0A]"
+      style={{ fontFamily: 'Outfit, sans-serif' }}
+    >
+      {selectedSet.document_name || 'Untitled Document'}
+    </h2>
+    <p className="text-sm text-gray-600">
+      Flashcards from this document
+    </p>
+  </div>
+
+  <button
+    onClick={() => navigate(`/documents/${selectedSet.document_id}`)}
+    className="btn-secondary py-2 px-4 text-sm"
+  >
+    View Source Document
+  </button>
+</div>
+
+    <div className="mb-6 flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <span className="badge badge-butter">
                   {currentIndex + 1} / {selectedSet.flashcards.length}
