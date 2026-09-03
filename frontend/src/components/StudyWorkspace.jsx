@@ -1,13 +1,49 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, FileText, ZoomIn, ZoomOut } from 'lucide-react';
+import { documentService } from '../services/api';
 
 const StudyWorkspace = ({ document, title, subtitle, children }) => {
   const [mobileOpen, setMobileOpen] = useState(true);
   const [zoomLevel, setZoomLevel] = useState(100);
+  const [pdfUrl, setPdfUrl] = useState(null);
 
-  const backendBase = process.env.REACT_APP_BACKEND_URL || 'http://127.0.0.1:8000';
-  const isPdf = typeof document?.content_type === 'string' && document.content_type.includes('pdf');
-  const pdfUrl = document?.id ? `${backendBase}/api/documents/${document.id}/file` : null;
+  const mimeType = typeof document?.content_type === 'string' ? document.content_type.toLowerCase() : '';
+  const fileName = typeof document?.original_filename === 'string' ? document.original_filename.toLowerCase() : '';
+  const isPdf = mimeType.includes('pdf') || fileName.endsWith('.pdf');
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = null;
+
+    if (!document?.id || !isPdf) {
+      setPdfUrl(null);
+      return undefined;
+    }
+
+    documentService.getFile(document.id)
+      .then(({ data }) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(data);
+        setPdfUrl((current) => {
+          if (current) {
+            URL.revokeObjectURL(current);
+          }
+          return objectUrl;
+        });
+      })
+      .catch(() => {
+        if (active) {
+          setPdfUrl(null);
+        }
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [document?.id, isPdf]);
 
   const preview = useMemo(() => {
     if (!document) {

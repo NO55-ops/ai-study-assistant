@@ -11,6 +11,7 @@ export const documentService = {
   upload: (formData) => api.post('/documents/upload', formData),
   list: () => api.get('/documents'),
   get: (id) => api.get(`/documents/${id}`),
+  getFile: (id) => api.get(`/documents/${id}/file`, { responseType: 'blob' }),
   delete: (id) => api.delete(`/documents/${id}`),
 };
 
