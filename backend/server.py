@@ -902,6 +902,30 @@ async def get_document(doc_id: str, request: Request):
     doc = normalize_supabase_id(doc) or dict(doc)
     return doc
 
+@api_router.get("/documents/{doc_id}/file")
+async def get_document_file(doc_id: str, request: Request):
+    user = await get_current_user(request)
+    doc = await db.documents.find_one({"_id": doc_id, "user_id": user["id"], "is_deleted": False})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    storage_path = doc.get("storage_path")
+    if not storage_path:
+        raise HTTPException(status_code=404, detail="Document file not found")
+
+    try:
+        file_bytes, _ = get_object(storage_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Document file not found")
+
+    content_type = doc.get("content_type") or "application/octet-stream"
+    filename = doc.get("original_filename") or "document"
+    return Response(
+        content=file_bytes,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
 @api_router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str, request: Request):
     user = await get_current_user(request)
@@ -1104,7 +1128,7 @@ Format as JSON:
         "id": flashcard_set_id,
         "user_id": user["id"],
         "document_id": req.document_id,
-        "document_name": doc.get("filename") or doc.get("name") or "Untitled Document",
+        "document_name": doc.get("original_filename") or doc.get("filename") or doc.get("name") or "Untitled Document",
         "flashcards": flashcard_data.get("flashcards", []),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
