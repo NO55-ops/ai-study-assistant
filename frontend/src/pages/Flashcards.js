@@ -5,6 +5,8 @@ import { Layers, ArrowLeft, ArrowRight, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
 const Flashcards = () => {
+  const navigate = useNavigate();
+
   const [flashcardSets, setFlashcardSets] = useState([]);
   const [selectedSet, setSelectedSet] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -12,8 +14,7 @@ const Flashcards = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const navigate = useNavigate();
-    const fetchFlashcards = async () => {
+  const fetchFlashcards = async () => {
       try {
         const { data } = await flashcardService.list();
         setFlashcardSets(data);
