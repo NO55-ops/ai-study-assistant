@@ -258,22 +258,28 @@
 
 .study-workspace {
   display: grid;
-  grid-template-columns: minmax(280px, 38%) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 45%) minmax(0, 55%);
   gap: 1.5rem;
   max-width: 1440px;
+  min-height: calc(100vh - 120px);
   margin: 0 auto;
   padding: 2rem 1rem 3rem;
-  align-items: start;
+  align-items: stretch;
 }
 
 .study-workspace__sidebar {
   position: sticky;
   top: 1rem;
+  display: flex;
+  flex-direction: column;
+  min-height: min(78vh, 980px);
+  max-height: calc(100vh - 120px);
   background: white;
   border: 2px solid #0A0A0A;
   border-radius: 1.5rem;
   box-shadow: 6px 6px 0 #0A0A0A;
   padding: 1.1rem;
+  overflow: hidden;
 }
 
 .study-workspace__sidebar-header {
@@ -336,12 +342,68 @@
 }
 
 .study-workspace__preview {
+  flex: 1;
   min-height: 220px;
   background: #FDFBF7;
   border: 2px solid #0A0A0A;
   border-radius: 1rem;
   padding: 1rem;
   overflow: auto;
+}
+
+.study-workspace__pdf-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: #f7f7f5;
+  border: 2px solid #0A0A0A;
+  border-radius: 1rem;
+  overflow: hidden;
+}
+
+.study-workspace__pdf-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border-bottom: 2px solid #0A0A0A;
+  background: #f1f5f9;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.study-workspace__pdf-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 2px solid #0A0A0A;
+  border-radius: 0.7rem;
+  background: #ffffff;
+  color: #0A0A0A;
+  cursor: pointer;
+}
+
+.study-workspace__pdf-scroll {
+  flex: 1;
+  min-height: 480px;
+  overflow: auto;
+  background: #eef2f7;
+  padding: 0.75rem;
+}
+
+.study-workspace__pdf-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 640px;
+  border: none;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(10, 10, 10, 0.07);
 }
 
 .study-workspace__preview p {

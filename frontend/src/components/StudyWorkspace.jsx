@@ -63,6 +63,16 @@ const StudyWorkspace = ({ document, title, subtitle, children }) => {
     return compactText.length > 1800 ? `${compactText.slice(0, 1800)}...` : compactText;
   }, [document, isPdf]);
 
+  const pdfFrameStyle = {
+    width: `${zoomLevel}%`,
+    height: '100%',
+    maxWidth: '100%',
+    display: 'block',
+    margin: '0 auto',
+    border: 'none',
+    background: '#ffffff',
+  };
+
   return (
     <div className="study-workspace" data-testid="study-workspace">
       <aside className={`study-workspace__sidebar ${mobileOpen ? 'open' : 'collapsed'}`}>
@@ -108,7 +118,7 @@ const StudyWorkspace = ({ document, title, subtitle, children }) => {
                 src={pdfUrl}
                 title={document?.original_filename || 'Study document'}
                 className="study-workspace__pdf-frame"
-                style={{ transform: `scale(${zoomLevel / 100})`, transformOrigin: 'top center' }}
+                style={pdfFrameStyle}
               />
             </div>
           </div>
