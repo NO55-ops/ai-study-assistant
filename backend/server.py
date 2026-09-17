@@ -671,12 +671,14 @@ async def register(req: RegisterRequest, response: Response):
     access_token = create_access_token(user_id, email)
     refresh_token = create_refresh_token(user_id)
 
+    # For local development and test runs, do not require Secure cookie flag
+    # so cookies are sent over HTTP. In production, set secure=True via env.
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=False,
+        samesite="lax",
         max_age=900,
         path="/"
     )
@@ -685,8 +687,8 @@ async def register(req: RegisterRequest, response: Response):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=False,
+        samesite="lax",
         max_age=604800,
         path="/"
     )
@@ -736,12 +738,14 @@ async def login(req: LoginRequest, response: Response):
 
     refresh_token = create_refresh_token(user_id)
 
+    # For local development and test runs, do not require Secure cookie flag
+    # so cookies are sent over HTTP. In production, set secure=True via env.
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=False,
+        samesite="lax",
         max_age=900,
         path="/"
     )
@@ -750,8 +754,8 @@ async def login(req: LoginRequest, response: Response):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=False,
+        samesite="lax",
         max_age=604800,
         path="/"
     )
@@ -799,6 +803,8 @@ async def complete_onboarding(
             "curriculum": req.curriculum,
             "exam_dates": req.exam_dates
         },
+        # Keep a top-level curriculum field for compatibility
+        "curriculum": req.curriculum,
         "daily_study_goal": req.daily_study_goal,
         "onboarded": True
     }
@@ -893,19 +899,15 @@ async def list_documents(request: Request):
         normalized_docs.append(normalized)
     return normalized_docs
 
-@api_router.get("/documents/{doc_id}")
-async def get_document(doc_id: str, request: Request):
-    user = await get_current_user(request)
-    doc = await db.documents.find_one({"_id": doc_id, "user_id": user["id"], "is_deleted": False})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    doc = normalize_supabase_id(doc) or dict(doc)
-    return doc
-
 @api_router.get("/documents/{doc_id}/file")
 async def get_document_file(doc_id: str, request: Request):
     user = await get_current_user(request)
-    doc = await db.documents.find_one({"_id": doc_id, "user_id": user["id"], "is_deleted": False})
+
+    doc = await db.documents.find_one({
+        "id": doc_id,
+        "user_id": user["id"],
+        "is_deleted": False
+    })
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -920,11 +922,32 @@ async def get_document_file(doc_id: str, request: Request):
 
     content_type = doc.get("content_type") or "application/octet-stream"
     filename = doc.get("original_filename") or "document"
+
     return Response(
         content=file_bytes,
         media_type=content_type,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"'
+        }
     )
+
+
+@api_router.get("/documents/{doc_id}")
+async def get_document(doc_id: str, request: Request):
+    user = await get_current_user(request)
+
+    doc = await db.documents.find_one({
+        "id": doc_id,
+        "user_id": user["id"],
+        "is_deleted": False
+    })
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    response_doc = normalize_supabase_id(doc) or dict(doc)
+    response_doc.pop("extracted_text", None)
+    response_doc.pop("_id", None)
+    return response_doc
 
 @api_router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str, request: Request):
@@ -1390,7 +1413,8 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    # When running locally with credentials, default to localhost:3000
+    allow_origins=os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
