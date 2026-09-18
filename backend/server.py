@@ -677,8 +677,8 @@ async def register(req: RegisterRequest, response: Response):
         key="access_token",
         value=access_token,
         httponly=True,
-        secure=False,
-        samesite="lax",
+        secure=True,
+        samesite="none",
         max_age=900,
         path="/"
     )
@@ -687,8 +687,8 @@ async def register(req: RegisterRequest, response: Response):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=False,
-        samesite="lax",
+       secure=True,
+    samesite="none",
         max_age=604800,
         path="/"
     )
@@ -754,8 +754,8 @@ async def login(req: LoginRequest, response: Response):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=False,
-        samesite="lax",
+        secure=True,
+samesite="none",
         max_age=604800,
         path="/"
     )
@@ -1413,8 +1413,9 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    # When running locally with credentials, default to localhost:3000
-    allow_origins=os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(','),
+    # When running locally with credentials, default to common localhost origins
+    # Include ports used by CRA (3000) and Vite (5173) and their 127.0.0.1 equivalents
+    allow_origins=os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
