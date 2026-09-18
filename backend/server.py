@@ -482,6 +482,13 @@ def create_refresh_token(user_id: str) -> str:
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 async def get_current_user(request: Request) -> dict:
+    # Safe diagnostic: log only cookie names (never values) and request path
+    try:
+        cookie_names = list(request.cookies.keys())
+    except Exception:
+        cookie_names = []
+    logger.info("Cookie names received: %s Path: %s", cookie_names, getattr(request.url, 'path', str(request.url)))
+
     token = request.cookies.get("access_token")
 
     if not token:
