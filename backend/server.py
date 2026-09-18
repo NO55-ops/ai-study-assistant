@@ -395,6 +395,10 @@ openai_client = AsyncOpenAI(
     api_key=OPENAI_API_KEY,
 )
 
+# Cookie security configuration: set COOKIE_SECURE=1 in production to force Secure cookies
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0").lower() in ("1", "true", "yes")
+COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
+
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
     """Save file to local filesystem storage."""
@@ -684,8 +688,8 @@ async def register(req: RegisterRequest, response: Response):
         key="access_token",
         value=access_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
         max_age=900,
         path="/"
     )
@@ -694,8 +698,8 @@ async def register(req: RegisterRequest, response: Response):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-       secure=True,
-    samesite="none",
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
         max_age=604800,
         path="/"
     )
@@ -751,8 +755,8 @@ async def login(req: LoginRequest, response: Response):
         key="access_token",
         value=access_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
         max_age=900,
         path="/"
     )
@@ -761,8 +765,8 @@ async def login(req: LoginRequest, response: Response):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,
-samesite="none",
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
         max_age=604800,
         path="/"
     )
@@ -909,7 +913,6 @@ async def list_documents(request: Request):
 @api_router.get("/documents/{doc_id}/file")
 async def get_document_file(doc_id: str, request: Request):
     user = await get_current_user(request)
-
     doc = await db.documents.find_one({
         "id": doc_id,
         "user_id": user["id"],
