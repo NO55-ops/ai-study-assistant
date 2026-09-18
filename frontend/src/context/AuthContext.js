@@ -66,13 +66,25 @@ export const AuthProvider = ({ children }) => {
   };
 
   const completeOnboarding = useCallback(async (onboardingData) => {
-  try {
-    await axios.post(`${API}/auth/onboarding`, onboardingData, { withCredentials: true });
-    await checkAuth();
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: formatApiErrorDetail(e.response?.data?.detail) || e.message };
-  }
+    try {
+      await axios.post(`${API}/auth/onboarding`, onboardingData, { withCredentials: true });
+      await checkAuth();
+      return { success: true };
+    } catch (e) {
+      // If unauthorized, attempt a single refresh and retry
+      if (e.response && e.response.status === 401) {
+        try {
+          await axios.post(`${API}/auth/refresh`, {}, { withCredentials: true });
+          // retry once
+          await axios.post(`${API}/auth/onboarding`, onboardingData, { withCredentials: true });
+          await checkAuth();
+          return { success: true };
+        } catch (refreshErr) {
+          return { success: false, error: formatApiErrorDetail(refreshErr.response?.data?.detail) || refreshErr.message };
+        }
+      }
+      return { success: false, error: formatApiErrorDetail(e.response?.data?.detail) || e.message };
+    }
 }, [checkAuth]);
 
   const value = useMemo(

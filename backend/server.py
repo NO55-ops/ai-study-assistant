@@ -793,6 +793,58 @@ async def logout(response: Response):
     }
 
 
+@api_router.post("/auth/refresh")
+async def refresh_token(request: Request, response: Response):
+    # Diagnostic: log presence of refresh cookie and authorization header (no values)
+    try:
+        cookie_names = list(request.cookies.keys())
+    except Exception:
+        cookie_names = []
+    logger.info("Refresh request cookie names: %s Path: %s", cookie_names, getattr(request.url, 'path', str(request.url)))
+
+    refresh = request.cookies.get("refresh_token")
+    auth_header = request.headers.get("Authorization", "")
+
+    if not refresh and not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    token_to_check = refresh or (auth_header[7:] if auth_header.startswith("Bearer ") else None)
+
+    try:
+        payload = jwt.decode(token_to_check, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+
+        user_id = payload.get("sub")
+        user = await db.users.find_one({"id": user_id})
+        if not user:
+            user = await db.users.find_one({"_id": user_id})
+
+        user = normalize_record(user)
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+
+        # issue new access token
+        access_token = create_access_token(user["id"], user.get("email", ""))
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=COOKIE_SECURE,
+            samesite=COOKIE_SAMESITE,
+            max_age=900,
+            path="/"
+        )
+
+        return {"message": "access refreshed"}
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+
 @api_router.get("/auth/me")
 async def get_me(request: Request):
     user = await get_current_user(request)
