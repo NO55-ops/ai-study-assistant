@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 
 try:
     from supabase import create_client, Client
@@ -399,11 +399,21 @@ openai_client = AsyncOpenAI(
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0").lower() in ("1", "true", "yes")
 # If a Vercel same-origin proxy is used, prefer SameSite=lax so cookies are sent on same-origin requests.
 USE_VERCEL_PROXY = os.environ.get("USE_VERCEL_PROXY", "0").lower() in ("1", "true", "yes")
-# Allow explicit override via COOKIE_SAMESITE env; otherwise derive safely:
-# - If USE_VERCEL_PROXY: 'lax' (first-party requests)
-# - Else if COOKIE_SECURE: 'none' (cross-site with Secure)
-# - Else: 'lax' (development)
-COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE") or ("lax" if USE_VERCEL_PROXY else ("none" if COOKIE_SECURE else "lax"))
+
+
+def _parse_samesite(value: Optional[str], use_proxy: bool, cookie_secure: bool) -> Literal["lax", "strict", "none"]:
+    if value:
+        v = value.strip().lower()
+        if v in ("lax", "strict", "none"):
+            return v  # type: ignore[return-value]
+    if use_proxy:
+        return "lax"
+    if cookie_secure:
+        return "none"
+    return "lax"
+
+
+COOKIE_SAMESITE: Literal["lax", "strict", "none"] = _parse_samesite(os.environ.get("COOKIE_SAMESITE"), USE_VERCEL_PROXY, COOKIE_SECURE)
 
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
@@ -500,13 +510,12 @@ async def get_current_user(request: Request) -> dict:
     logger.info("Cookie names received: %s Path: %s", cookie_names, getattr(request.url, 'path', str(request.url)))
 
     token = request.cookies.get("access_token")
+    auth_header = request.headers.get("Authorization", "")
 
-    if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
+    if token is None and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
 
-    if not token:
+    if token is None or token == "":
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
@@ -812,10 +821,10 @@ async def refresh_token(request: Request, response: Response):
     refresh = request.cookies.get("refresh_token")
     auth_header = request.headers.get("Authorization", "")
 
-    if not refresh and not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
     token_to_check = refresh or (auth_header[7:] if auth_header.startswith("Bearer ") else None)
+
+    if token_to_check is None or token_to_check == "":
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
         payload = jwt.decode(token_to_check, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
