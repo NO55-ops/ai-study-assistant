@@ -397,8 +397,13 @@ openai_client = AsyncOpenAI(
 
 # Cookie security configuration: set COOKIE_SECURE=1 in production to force Secure cookies
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0").lower() in ("1", "true", "yes")
-COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE") or ("lax" if COOKIE_SECURE else "lax")
+# If a Vercel same-origin proxy is used, prefer SameSite=lax so cookies are sent on same-origin requests.
 USE_VERCEL_PROXY = os.environ.get("USE_VERCEL_PROXY", "0").lower() in ("1", "true", "yes")
+# Allow explicit override via COOKIE_SAMESITE env; otherwise derive safely:
+# - If USE_VERCEL_PROXY: 'lax' (first-party requests)
+# - Else if COOKIE_SECURE: 'none' (cross-site with Secure)
+# - Else: 'lax' (development)
+COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE") or ("lax" if USE_VERCEL_PROXY else ("none" if COOKIE_SECURE else "lax"))
 
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
