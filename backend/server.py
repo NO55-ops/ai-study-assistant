@@ -397,7 +397,8 @@ openai_client = AsyncOpenAI(
 
 # Cookie security configuration: set COOKIE_SECURE=1 in production to force Secure cookies
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0").lower() in ("1", "true", "yes")
-COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
+COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE") or ("lax" if COOKIE_SECURE else "lax")
+USE_VERCEL_PROXY = os.environ.get("USE_VERCEL_PROXY", "0").lower() in ("1", "true", "yes")
 
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
@@ -793,11 +794,12 @@ async def logout(response: Response):
     }
 
 
-@api_router.post("/auth/refresh")
+
+@api_router.post("/auth/refresh") 
 async def refresh_token(request: Request, response: Response):
     # Diagnostic: log presence of refresh cookie and authorization header (no values)
     try:
-        cookie_names = list(request.cookies.keys())
+      cookie_names = list(request.cookies.keys())
     except Exception:
         cookie_names = []
     logger.info("Refresh request cookie names: %s Path: %s", cookie_names, getattr(request.url, 'path', str(request.url)))

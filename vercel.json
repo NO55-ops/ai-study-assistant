@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://ai-study-assistant-backend-t2ie.onrender.com/api/:path*"
+    }
+  ]
+}

@@ -1,11 +1,35 @@
 import axios from 'axios';
 
-const API = process.env.REACT_APP_BACKEND_URL + '/api';
+// Use same-origin API in production (Vercel proxy). In development, use REACT_APP_BACKEND_URL if provided.
+const API = process.env.NODE_ENV === 'production' ? '/api' : (process.env.REACT_APP_BACKEND_URL + '/api');
 
 const api = axios.create({
   baseURL: API,
   withCredentials: true,
 });
+
+// Automatic refresh on 401: attempt single refresh and retry original request once
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config || {};
+    if (error.response && error.response.status === 401 && !originalRequest._retry) {
+      // Avoid retrying the refresh endpoint itself
+      if (originalRequest.url && originalRequest.url.includes('/auth/refresh')) {
+        return Promise.reject(error);
+      }
+
+      originalRequest._retry = true;
+      try {
+        await api.post('/auth/refresh', {}, { withCredentials: true });
+        return api(originalRequest);
+      } catch (refreshErr) {
+        return Promise.reject(refreshErr);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 export const documentService = {
   upload: (formData) => api.post('/documents/upload', formData),
