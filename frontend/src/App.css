@@ -475,3 +475,13 @@
 .stagger-3 { animation-delay: 0.3s; }
 .stagger-4 { animation-delay: 0.4s; }
 .stagger-5 { animation-delay: 0.5s; }
+
+body:has([data-testid="navbar"]) {
+  padding-left: 96px;
+}
+
+@media (max-width: 767px) {
+  body:has([data-testid="navbar"]) {
+    padding-left: 0;
+  }
+}
