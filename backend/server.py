@@ -49,7 +49,7 @@ DEFAULT_LIBRARY_CATALOG = {
             "name": "Cambridge IGCSE",
             "status": "published",
             "long_name": "Cambridge IGCSE",
-            "description": "A curated sample catalog for inquiry-led study, starting with International Mathematics 0607 Extended.",
+            "description": "A curriculum review catalog for inquiry-led study, beginning with International Mathematics 0607 Extended.",
             "subjects": [
                 {
                     "id": "international-mathematics-0607-extended",
@@ -57,46 +57,57 @@ DEFAULT_LIBRARY_CATALOG = {
                     "name": "International Mathematics 0607 Extended",
                     "code": "0607",
                     "status": "published",
-                    "description": "Sample topic content for review. Final syllabus version should be confirmed before labeling as fully syllabus-aligned.",
+                    "description": "Useful draft topic notes for revision. Final syllabus alignment should still be checked against the official Cambridge 0607 Extended syllabus for the relevant exam series.",
                     "topics": [
                         {
                             "id": "quadratic-equations",
                             "slug": "quadratic-equations",
                             "title": "Quadratic Equations",
                             "status": "published",
-                            "summary": "Solve, sketch, and interpret quadratic equations in context.",
-                            "syllabus_note": "Sample topic content for review. Confirm the final Cambridge syllabus version before labeling this as fully syllabus-aligned.",
+                            "summary": "Solve quadratic equations by factorisation, completing the square, and the quadratic formula, and use the discriminant to interpret the number of real roots.",
+                            "syllabus_note": "This is a useful draft for revision and topic study. Final syllabus alignment must be confirmed against the official Cambridge IGCSE International Mathematics 0607 Extended syllabus for the relevant exam series.",
                             "notes": [
                                 {
-                                    "heading": "Core idea",
+                                    "heading": "Definition and standard form",
                                     "content": [
-                                        "A quadratic equation is any equation that can be written in the form a x^2 + b x + c = 0, where a, b, and c are constants and a ≠ 0.",
-                                        "The solutions are the x-values that make the expression equal to zero. These are called roots or zeroes.",
-                                        "Quadratic equations are often used to model motion, area, and optimization problems."
+                                        "A quadratic equation is any equation that can be written in the form ax^2 + bx + c = 0, where a, b, and c are constants and a ≠ 0.",
+                                        "The variable x appears squared, so the graph is a parabola and the equation may have 0, 1, or 2 real solutions depending on the discriminant.",
+                                        "Before solving, rewrite the equation in standard form so the coefficients are easy to identify."
                                     ]
                                 },
                                 {
-                                    "heading": "Methods of solving",
+                                    "heading": "Methods for solving",
                                     "content": [
-                                        "Factorisation is often the quickest route when the expression factors neatly.",
-                                        "The quadratic formula works for all quadratics and is especially useful when factorisation is not straightforward.",
-                                        "Completing the square helps reveal the vertex form and is useful for graph interpretation."
+                                        "Factorisation is the quickest method when the expression splits neatly into two linear factors.",
+                                        "Completing the square is a useful method when the expression is not easily factorised and helps reveal the vertex form of a parabola.",
+                                        "The quadratic formula x = (-b ± √(b^2 - 4ac)) / 2a always works for any quadratic equation with real coefficients."
+                                    ]
+                                },
+                                {
+                                    "heading": "Interpreting the roots",
+                                    "content": [
+                                        "The discriminant Δ = b^2 - 4ac tells you the number of real roots before solving fully.",
+                                        "If Δ > 0, the equation has two distinct real roots; if Δ = 0, there is one repeated root; if Δ < 0, there are no real roots in the real number system.",
+                                        "The roots correspond to x-intercepts of the parabola y = ax^2 + bx + c."
                                     ]
                                 }
                             ],
                             "formulae": [
-                                "ax^2 + bx + c = 0",
-                                "x = (-b ± √(b^2 - 4ac)) / 2a",
-                                "The discriminant is Δ = b^2 - 4ac",
-                                "If Δ > 0, there are two distinct real roots; if Δ = 0, one repeated root; if Δ < 0, no real roots."
+                                "Standard form: ax^2 + bx + c = 0, where a ≠ 0",
+                                "Quadratic formula: x = (-b ± √(b^2 - 4ac)) / 2a",
+                                "Discriminant: Δ = b^2 - 4ac",
+                                "Sum of roots: -b / a",
+                                "Product of roots: c / a",
+                                "Vertex form: a(x - h)^2 + k = 0, where (h, k) is the vertex"
                             ],
                             "worked_examples": [
                                 {
-                                    "question": "Solve x^2 - 5x + 6 = 0.",
+                                    "question": "Solve x^2 - 5x + 6 = 0 by factorisation.",
                                     "steps": [
-                                        "Factor the quadratic: (x - 2)(x - 3) = 0.",
-                                        "Set each bracket equal to zero: x - 2 = 0 or x - 3 = 0.",
-                                        "Therefore, x = 2 or x = 3."
+                                        "Find two numbers that multiply to 6 and add to -5. Those numbers are -2 and -3.",
+                                        "Write the quadratic as (x - 2)(x - 3) = 0.",
+                                        "Set each factor equal to zero: x - 2 = 0 or x - 3 = 0.",
+                                        "Therefore x = 2 or x = 3."
                                     ],
                                     "answer": "x = 2 or x = 3."
                                 },
@@ -104,26 +115,41 @@ DEFAULT_LIBRARY_CATALOG = {
                                     "question": "Solve 2x^2 + 3x - 2 = 0 using the quadratic formula.",
                                     "steps": [
                                         "Identify a = 2, b = 3, c = -2.",
-                                        "Use x = (-b ± √(b^2 - 4ac)) / 2a = (-3 ± √(9 + 16)) / 4 = (-3 ± 5) / 4.",
-                                        "So x = 2/4 = 0.5 or x = -8/4 = -2."
+                                        "Compute the discriminant: Δ = 3^2 - 4(2)(-2) = 9 + 16 = 25.",
+                                        "Apply the formula: x = (-3 ± √25) / 4 = (-3 ± 5) / 4.",
+                                        "So x = 2/4 = 1/2 or x = -8/4 = -2."
                                     ],
-                                    "answer": "x = 0.5 or x = -2."
+                                    "answer": "x = 1/2 or x = -2."
+                                },
+                                {
+                                    "question": "Use completing the square to solve x^2 - 6x + 5 = 0.",
+                                    "steps": [
+                                        "Move the constant: x^2 - 6x = -5.",
+                                        "Add (6/2)^2 = 9 to both sides: x^2 - 6x + 9 = 4.",
+                                        "Factor the left-hand side: (x - 3)^2 = 4.",
+                                        "Take square roots: x - 3 = ±2.",
+                                        "So x = 5 or x = 1."
+                                    ],
+                                    "answer": "x = 1 or x = 5."
                                 }
                             ],
                             "exam_tips": [
-                                "Always check whether the equation is already in standard form before applying a method.",
-                                "If the coefficient in front of x^2 is not 1, look carefully before deciding whether factorisation is possible.",
-                                "Use the discriminant to classify the number of real solutions quickly."
+                                "Always put the equation in standard form before identifying a, b, and c.",
+                                "Check the discriminant first: it tells you how many real roots to expect and whether the equation is likely to factor nicely.",
+                                "When factorising, check the signs carefully; the product and sum must match the coefficients.",
+                                "If you use the quadratic formula, write each coefficient clearly to avoid sign mistakes."
                             ],
                             "common_mistakes": [
-                                "Forgetting that the quadratic formula uses b^2 - 4ac, not b^2 + 4ac.",
-                                "Stopping after finding one root when the equation has two solutions.",
-                                "Misreading the sign when solving with a negative constant term."
+                                "Using b^2 + 4ac instead of b^2 - 4ac in the discriminant.",
+                                "Forgetting that a ≠ 0 and that the standard form must be used before extracting a, b, and c.",
+                                "Stopping after finding one root when the equation has two solutions or a repeated root.",
+                                "Ignoring a negative sign when moving terms across the equation."
                             ],
                             "flashcards": [
-                                {"front": "What is a quadratic equation?", "back": "An equation of the form ax^2 + bx + c = 0, where a ≠ 0."},
-                                {"front": "What does the discriminant tell us?", "back": "It tells us the number and type of real roots: Δ > 0 gives two real roots, Δ = 0 gives one repeated root, and Δ < 0 gives no real roots."},
-                                {"front": "What is the standard quadratic formula?", "back": "x = (-b ± √(b^2 - 4ac)) / 2a."}
+                                {"front": "What is the standard form of a quadratic equation?", "back": "ax^2 + bx + c = 0, where a ≠ 0."},
+                                {"front": "What does the discriminant tell you?", "back": "It tells you the number and type of real roots: Δ > 0 gives two real roots, Δ = 0 gives one repeated real root, and Δ < 0 gives no real roots."},
+                                {"front": "When is factorisation most useful?", "back": "When the quadratic splits cleanly into two linear factors with integer or simple rational values."},
+                                {"front": "When do you use the quadratic formula?", "back": "When factorisation is not straightforward or when you need a reliable method for any quadratic."}
                             ],
                             "practice_questions": [
                                 {
@@ -131,21 +157,35 @@ DEFAULT_LIBRARY_CATALOG = {
                                     "options": ["x = 3 only", "x = -3 only", "x = 3 or x = -3", "x = 9"],
                                     "correct_answer": "C",
                                     "answer": "x = 3 or x = -3.",
-                                    "explanation": "The equation factors as (x - 3)(x + 3) = 0, so both values make the product zero."
+                                    "explanation": "Factorise as (x - 3)(x + 3) = 0, then set each bracket to zero."
                                 },
                                 {
-                                    "question": "For x^2 - 4x + 4 = 0, how many real solutions does it have?",
-                                    "options": ["None", "One repeated root", "Two distinct roots", "Three roots"],
-                                    "correct_answer": "B",
-                                    "answer": "One repeated root.",
-                                    "explanation": "The discriminant is 0 because (-4)^2 - 4(1)(4) = 0, which indicates exactly one repeated real root."
+                                    "question": "Solve x^2 - 4x + 4 = 0.",
+                                    "options": ["x = 2 only", "x = -2 only", "x = 4 or x = -4", "x = 1 or x = 4"],
+                                    "correct_answer": "A",
+                                    "answer": "x = 2 only.",
+                                    "explanation": "This is a perfect square: (x - 2)^2 = 0, so the repeated root is x = 2."
+                                },
+                                {
+                                    "question": "Find the discriminant of x^2 - 7x + 10 = 0 and state the nature of the roots.",
+                                    "options": ["Δ = 9; two distinct real roots", "Δ = -9; no real roots", "Δ = 0; one repeated root", "Δ = 49; one repeated root"],
+                                    "correct_answer": "A",
+                                    "answer": "Δ = (-7)^2 - 4(1)(10) = 49 - 40 = 9; there are two distinct real roots.",
+                                    "explanation": "Since Δ > 0, there are two different real roots."
+                                },
+                                {
+                                    "question": "Solve 3x^2 + 5x - 2 = 0 correct to 3 significant figures.",
+                                    "options": ["x = 0.333 or x = -2", "x = 0.5 or x = -2/3", "x = 0.333 or x = -2.00", "x = 0.5 or x = -2"],
+                                    "correct_answer": "D",
+                                    "answer": "x = 0.5 or x = -2/3 (approximately -0.667).",
+                                    "explanation": "Use the quadratic formula with a = 3, b = 5, c = -2 to obtain x = (-5 ± √49) / 6 = (-5 ± 7) / 6, giving x = 1/3 or x = -2. If the question expects fractions, the exact solutions are x = 1/3 and x = -2; if the question expects decimals, x ≈ 0.333 and x = -2."
                                 }
                             ],
                             "resources": [
                                 {
                                     "type": "summary",
-                                    "title": "Quadratics at a glance",
-                                    "content": "Factorise or use the formula. Check the discriminant to predict the number of real roots before solving."
+                                    "title": "Quadratic Equations summary",
+                                    "content": "Factorise or use the formula. Quadratic equations take the form ax^2 + bx + c = 0. Use factorisation when possible, otherwise use the quadratic formula. The discriminant Δ = b^2 - 4ac decides whether there are two, one, or no real roots, and the graph is a parabola."
                                 }
                             ]
                         }
@@ -155,6 +195,57 @@ DEFAULT_LIBRARY_CATALOG = {
         }
     ]
 }
+
+
+KNOWN_SAMPLE_LIBRARY_PLACEHOLDER_SLUGS = {
+    "library_qualifications": {"cambridge-igcse"},
+    "library_subjects": {"international-mathematics-0607-extended"},
+    "library_topics": {"quadratic-equations"},
+}
+
+
+def _library_record_is_known_sample_placeholder(table_name: str, record: Any) -> bool:
+    if not isinstance(record, dict):
+        return False
+
+    slug = str(record.get("slug") or record.get("id") or "").strip().lower()
+    title = str(record.get("title") or record.get("name") or "").strip().lower()
+
+    if table_name in KNOWN_SAMPLE_LIBRARY_PLACEHOLDER_SLUGS and slug in KNOWN_SAMPLE_LIBRARY_PLACEHOLDER_SLUGS[table_name]:
+        return True
+
+    if table_name == "library_resources":
+        if slug.startswith("quadratic-equations"):
+            return True
+        if "quadratic" in title and "equation" in title:
+            return True
+
+    if "sample catalog entry" in title or "sample" in title and "catalog" in title:
+        return True
+
+    return False
+
+
+def _db_update(db: Any, table_name: str, query: Dict[str, Any], update_payload: Dict[str, Any]) -> Dict[str, Any]:
+    if hasattr(db, table_name):
+        collection = getattr(db, table_name)
+        if hasattr(collection, "update_one"):
+            result = _call_db_action(collection.update_one, query, {"$set": update_payload})
+            return result if isinstance(result, dict) else {"matched_count": 0, "modified_count": 0}
+
+    rows = getattr(db, "rows", None)
+    if isinstance(rows, dict):
+        table_rows = rows.setdefault(table_name, [])
+        matched = 0
+        for row in table_rows:
+            if all(row.get(k) == v for k, v in query.items()):
+                row.update(update_payload)
+                matched += 1
+        return {"matched_count": matched, "modified_count": matched}
+
+    raise RuntimeError("Library catalog database is not configured for updates.")
+
+
 
 
 def normalize_record(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -704,10 +795,17 @@ def import_library_seed(seed: Any, db: Optional[Any] = None, report: Optional[Di
     for qualification in validated["qualifications"]:
         qualification_key = {"slug": qualification["slug"]}
         try:
-            if _db_find_one(active_db, "library_qualifications", qualification_key) is None:
+            existing_qualification = _db_find_one(active_db, "library_qualifications", qualification_key)
+            if existing_qualification is None:
                 qual_doc = {"slug": qualification["slug"], "name": qualification["name"], "status": qualification.get("status", "published")}
                 _db_insert(active_db, "library_qualifications", qual_doc)
                 counters["created"]["library_qualifications"] += 1
+            elif _library_record_is_known_sample_placeholder("library_qualifications", existing_qualification):
+                _db_update(active_db, "library_qualifications", qualification_key, {
+                    "name": qualification["name"],
+                    "status": qualification.get("status", "published"),
+                })
+                counters["skipped"]["library_qualifications"] += 1
             else:
                 counters["skipped"]["library_qualifications"] += 1
         except Exception as exc:
@@ -717,7 +815,8 @@ def import_library_seed(seed: Any, db: Optional[Any] = None, report: Optional[Di
         for subject in qualification["subjects"]:
             subject_key = {"slug": subject["slug"], "qualification_slug": qualification["slug"]}
             try:
-                if _db_find_one(active_db, "library_subjects", subject_key) is None:
+                existing_subject = _db_find_one(active_db, "library_subjects", subject_key)
+                if existing_subject is None:
                     _db_insert(active_db, "library_subjects", {
                         "slug": subject["slug"],
                         "qualification_slug": qualification["slug"],
@@ -725,6 +824,12 @@ def import_library_seed(seed: Any, db: Optional[Any] = None, report: Optional[Di
                         "status": subject.get("status", "published"),
                     })
                     counters["created"]["library_subjects"] += 1
+                elif _library_record_is_known_sample_placeholder("library_subjects", existing_subject):
+                    _db_update(active_db, "library_subjects", subject_key, {
+                        "name": subject["name"],
+                        "status": subject.get("status", "published"),
+                    })
+                    counters["skipped"]["library_subjects"] += 1
                 else:
                     counters["skipped"]["library_subjects"] += 1
             except Exception as exc:
@@ -734,7 +839,8 @@ def import_library_seed(seed: Any, db: Optional[Any] = None, report: Optional[Di
             for topic in subject["topics"]:
                 topic_key = {"slug": topic["slug"], "subject_slug": subject["slug"]}
                 try:
-                    if _db_find_one(active_db, "library_topics", topic_key) is None:
+                    existing_topic = _db_find_one(active_db, "library_topics", topic_key)
+                    if existing_topic is None:
                         _db_insert(active_db, "library_topics", {
                             "slug": topic["slug"],
                             "subject_slug": subject["slug"],
@@ -742,6 +848,12 @@ def import_library_seed(seed: Any, db: Optional[Any] = None, report: Optional[Di
                             "status": topic.get("status", "published"),
                         })
                         counters["created"]["library_topics"] += 1
+                    elif _library_record_is_known_sample_placeholder("library_topics", existing_topic):
+                        _db_update(active_db, "library_topics", topic_key, {
+                            "title": topic["title"],
+                            "status": topic.get("status", "published"),
+                        })
+                        counters["skipped"]["library_topics"] += 1
                     else:
                         counters["skipped"]["library_topics"] += 1
                 except Exception as exc:
@@ -751,7 +863,8 @@ def import_library_seed(seed: Any, db: Optional[Any] = None, report: Optional[Di
                 for resource in topic["resources"]:
                     resource_key = {"slug": resource.get("slug") or resource.get("title", topic["slug"]), "topic_slug": topic["slug"]}
                     try:
-                        if _db_find_one(active_db, "library_resources", resource_key) is None:
+                        existing_resource = _db_find_one(active_db, "library_resources", resource_key)
+                        if existing_resource is None:
                             _db_insert(active_db, "library_resources", {
                                 "slug": resource.get("slug") or resource.get("title", topic["slug"]),
                                 "topic_slug": topic["slug"],
@@ -761,6 +874,14 @@ def import_library_seed(seed: Any, db: Optional[Any] = None, report: Optional[Di
                                 "payload": resource["payload"],
                             })
                             counters["created"]["library_resources"] += 1
+                        elif _library_record_is_known_sample_placeholder("library_resources", existing_resource):
+                            _db_update(active_db, "library_resources", resource_key, {
+                                "resource_type": resource["resource_type"],
+                                "title": resource["title"],
+                                "status": resource.get("status", "published"),
+                                "payload": resource["payload"],
+                            })
+                            counters["skipped"]["library_resources"] += 1
                         else:
                             counters["skipped"]["library_resources"] += 1
                     except Exception as exc:
