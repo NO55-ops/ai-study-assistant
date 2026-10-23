@@ -51,7 +51,10 @@ export const aiService = {
 
 export const progressService = {
   getStats: () => api.get('/progress/stats'),
+  getSummary: () => api.get('/progress/summary'),
+  listSessions: () => api.get('/progress/sessions'),
   logActivity: (activityData) => api.post('/progress/log-activity', activityData),
+  setDailyGoal: (dailyGoalMinutes) => api.put('/progress/daily-goal', { daily_goal_minutes: dailyGoalMinutes }),
 };
 
 export const dashboardService = {

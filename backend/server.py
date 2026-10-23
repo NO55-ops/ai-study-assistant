@@ -18,7 +18,8 @@ from urllib.parse import urlparse, quote_plus
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
+from zoneinfo import ZoneInfo
 import bcrypt
 import jwt
 import requests
@@ -1442,6 +1443,7 @@ class SupabaseDatabase:
     question_set_questions = SupabaseCollection("question_set_questions")
     flashcard_sets = SupabaseCollection("flashcard_sets")
     study_plans = SupabaseCollection("study_plans")
+    study_sessions = SupabaseCollection("study_sessions")
     streaks = SupabaseCollection("streaks")
     notes = SupabaseCollection("notes")
     library_qualifications = SupabaseCollection("library_qualifications")
@@ -1713,6 +1715,14 @@ class FlashcardRequest(BaseModel):
 class StudyPlanRequest(BaseModel):
     exam_dates: List[Dict[str, str]]
     daily_study_time: int
+
+
+class StudySessionRequest(BaseModel):
+    started_at: str
+    ended_at: str
+    duration_minutes: Optional[int] = None
+    session_type: str = "study"
+    note: Optional[str] = None
 
 
 class NoteRequest(BaseModel):
@@ -2826,71 +2836,404 @@ async def get_current_study_plan(request: Request):
     plan = ensure_response_id(plan) or plan
     return plan
 
-# Progress tracking
+def _parse_iso_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError("Timestamp is required.")
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError as exc:
+            raise ValueError(f"Invalid ISO datetime: {value}") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _user_timezone(user: Optional[Dict[str, Any]] = None, fallback_name: Optional[str] = None, timezone_name: Optional[str] = None) -> ZoneInfo:
+    preferred = timezone_name or (user or {}).get("timezone") or fallback_name or "UTC"
+    try:
+        return ZoneInfo(str(preferred))
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def validate_study_session_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Study session payload must be an object.")
+
+    started_at = payload.get("started_at")
+    ended_at = payload.get("ended_at")
+    if not started_at or not ended_at:
+        raise ValueError("Study session requires both started_at and ended_at timestamps.")
+
+    try:
+        start_dt = _parse_iso_datetime(started_at)
+        end_dt = _parse_iso_datetime(ended_at)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+    if end_dt <= start_dt:
+        raise ValueError("Study session end time must be after the start time.")
+
+    duration_minutes = payload.get("duration_minutes")
+    computed_minutes = int((end_dt - start_dt).total_seconds() / 60)
+    if duration_minutes is not None:
+        try:
+            duration_minutes = int(duration_minutes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("duration_minutes must be a whole number of minutes.") from exc
+        if duration_minutes < 5:
+            raise ValueError("Study sessions must be at least 5 minutes long.")
+        if duration_minutes > 720:
+            raise ValueError("Study session duration is too long. Maximum is 12 hours.")
+        if abs(duration_minutes - computed_minutes) > 2:
+            raise ValueError("Study session duration does not match the time span provided.")
+        computed_minutes = duration_minutes
+
+    if computed_minutes < 5:
+        raise ValueError("Study sessions must be at least 5 minutes long.")
+    if computed_minutes > 720:
+        raise ValueError("Study session duration is too long. Maximum is 12 hours.")
+
+    return {
+        "started_at": start_dt.isoformat().replace("+00:00", "Z"),
+        "ended_at": end_dt.isoformat().replace("+00:00", "Z"),
+        "duration_minutes": computed_minutes,
+        "session_type": str(payload.get("session_type") or "study").strip() or "study",
+        "note": (payload.get("note") or "")[:500],
+    }
+
+
+def filter_user_study_sessions(sessions: List[Dict[str, Any]], user_id: str) -> List[Dict[str, Any]]:
+    return [session for session in sessions if str((session or {}).get("user_id")) == str(user_id)]
+
+
+def _date_for_study_session(session: Dict[str, Any], timezone_name: Optional[str] = None, fallback_utc: bool = True) -> Optional[str]:
+    if isinstance(session, dict):
+        if session.get("date_local"):
+            return str(session["date_local"]).split("T", 1)[0]
+        started_at = session.get("started_at") or session.get("startedAt")
+        if started_at:
+            try:
+                raw = str(started_at).strip()
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.date().isoformat()
+            except ValueError:
+                return None
+    return None
+
+
+def calculate_streak_summary(sessions: List[Dict[str, Any]], timezone_name: Optional[str] = None, today_override: Optional[str] = None) -> Dict[str, Any]:
+    if not sessions:
+        return {
+            "current_streak": 0,
+            "longest_streak": 0,
+            "total_active_days": 0,
+            "active_days": [],
+            "calendar": {},
+            "weekly_activity": [],
+            "recent_activity": [],
+            "total_minutes": 0,
+        }
+
+    tz = ZoneInfo(str(timezone_name)) if timezone_name else ZoneInfo("UTC")
+    daily_minutes: Dict[str, int] = {}
+    recent_activity: List[Dict[str, Any]] = []
+    normalized_active_days = set()
+
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        session_duration = session.get("duration_minutes")
+        if session_duration is None:
+            started_at = session.get("started_at") or session.get("startedAt")
+            ended_at = session.get("ended_at") or session.get("endedAt")
+            if started_at and ended_at:
+                try:
+                    session_duration = int((_parse_iso_datetime(ended_at) - _parse_iso_datetime(started_at)).total_seconds() / 60)
+                except ValueError:
+                    session_duration = 0
+        if session_duration is None:
+            session_duration = 0
+        try:
+            session_duration = int(session_duration)
+        except (TypeError, ValueError):
+            session_duration = 0
+
+        day_key = _date_for_study_session(session, timezone_name=timezone_name)
+        if not day_key:
+            day_key = session.get('date_local') or datetime.now(tz).date().isoformat()
+        if not day_key:
+            continue
+        normalized_active_days.add(day_key)
+        daily_minutes[day_key] = daily_minutes.get(day_key, 0) + max(0, session_duration)
+        recent_activity.append({
+            "id": session.get("id") or session.get("_id") or str(uuid.uuid4()),
+            "started_at": session.get("started_at") or session.get("startedAt") or datetime.now(timezone.utc).isoformat(),
+            "ended_at": session.get("ended_at") or session.get("endedAt") or session.get("started_at") or session.get("startedAt") or datetime.now(timezone.utc).isoformat(),
+            "duration_minutes": max(0, session_duration),
+            "session_type": session.get("session_type") or "study",
+            "note": session.get("note") or "",
+            "date_local": day_key,
+        })
+
+    active_days = sorted(daily_minutes.keys())
+    total_active_days = len(active_days)
+
+    longest_streak = 0
+    current = 0
+    previous_day: Optional[date] = None
+    for day_value in active_days:
+        day_obj = date.fromisoformat(day_value)
+        if previous_day is None:
+            current = 1
+        elif (day_obj - previous_day).days == 1:
+            current += 1
+        else:
+            current = 1
+        previous_day = day_obj
+        longest_streak = max(longest_streak, current)
+
+    if not active_days:
+        current_streak = 0
+    else:
+        latest_active = max(date.fromisoformat(day) for day in active_days)
+        reference_date = date.fromisoformat(today_override) if today_override else latest_active
+        current_streak = 1
+        cursor = latest_active
+        while True:
+            prev_day = cursor - timedelta(days=1)
+            if prev_day.isoformat() in normalized_active_days:
+                current_streak += 1
+                cursor = prev_day
+                continue
+            break
+
+        if reference_date > latest_active and (reference_date - latest_active).days > 1:
+            current_streak = 0
+
+    total_minutes = sum(daily_minutes.values())
+    calendar = {}
+    for day_value, minutes in daily_minutes.items():
+        calendar[day_value] = minutes
+
+    weekly_points = []
+    today_day = date.fromisoformat(today_override) if today_override else datetime.now(tz).date()
+    for offset in range(6, -1, -1):
+        day_obj = today_day - timedelta(days=offset)
+        day_key = day_obj.isoformat()
+        weekly_points.append({
+            "date": day_key,
+            "minutes": daily_minutes.get(day_key, 0),
+            "day": day_obj.strftime("%a"),
+        })
+
+    recent_activity.sort(key=lambda item: (item.get("started_at") or "", item.get("ended_at") or ""), reverse=True)
+
+    return {
+        "current_streak": current_streak,
+        "longest_streak": longest_streak,
+        "total_active_days": total_active_days,
+        "active_days": active_days,
+        "calendar": calendar,
+        "weekly_activity": weekly_points,
+        "recent_activity": recent_activity[:8],
+        "total_minutes": total_minutes,
+    }
+
+
+def build_daily_goal_progress(daily_goal_minutes: int, sessions: List[Dict[str, Any]], today_iso: Optional[str] = None) -> Dict[str, Any]:
+    goal = int(daily_goal_minutes or 60)
+    goal = max(15, min(goal, 720))
+    today_value = today_iso or datetime.now(timezone.utc).date().isoformat()
+    today_minutes = 0
+
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        date_local = session.get("date_local") or _date_for_study_session(session)
+        if date_local != today_value:
+            continue
+        duration = session.get("duration_minutes")
+        if duration is None:
+            started_at = session.get("started_at") or session.get("startedAt")
+            ended_at = session.get("ended_at") or session.get("endedAt")
+            if started_at and ended_at:
+                try:
+                    duration = int((_parse_iso_datetime(ended_at) - _parse_iso_datetime(started_at)).total_seconds() / 60)
+                except ValueError:
+                    duration = 0
+        try:
+            today_minutes += int(duration or 0)
+        except (TypeError, ValueError):
+            continue
+
+    minutes_remaining = max(0, goal - today_minutes)
+    progress_percent = 100 if goal <= 0 else min(100, round((today_minutes / goal) * 100))
+    return {
+        "goal_minutes": goal,
+        "minutes_completed": today_minutes,
+        "minutes_remaining": minutes_remaining,
+        "progress_percent": progress_percent,
+        "goal_reached": today_minutes >= goal,
+        "day": today_value,
+    }
+
+
+async def _get_user_study_sessions(user_id: str) -> List[Dict[str, Any]]:
+    try:
+        rows = await db.study_sessions.find({"user_id": user_id}).sort([("started_at", -1)]).to_list(1000)
+    except Exception:
+        rows = []
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        if not row:
+            continue
+        normalized_row = normalize_supabase_id(row) or dict(row)
+        normalized_row.pop("_id", None)
+        normalized.append(normalized_row)
+    return normalized
+
+
+async def _get_user_study_summary(user: Dict[str, Any]) -> Dict[str, Any]:
+    user_id = user["id"]
+    sessions = await _get_user_study_sessions(user_id)
+    if sessions:
+        sessions = filter_user_study_sessions(sessions, user_id)
+    tz_name = str((user or {}).get("timezone") or "UTC")
+    streak_summary = calculate_streak_summary(sessions, timezone_name=tz_name, today_override=datetime.now(_user_timezone(user)).date().isoformat())
+    daily_goal_minutes = int((user or {}).get("daily_study_goal") or 60)
+    daily_goal = build_daily_goal_progress(
+        daily_goal_minutes=daily_goal_minutes,
+        sessions=sessions,
+        today_iso=datetime.now(_user_timezone(user)).date().isoformat(),
+    )
+    return {
+        "current_streak": streak_summary["current_streak"],
+        "longest_streak": streak_summary["longest_streak"],
+        "total_active_days": streak_summary["total_active_days"],
+        "weekly_activity": streak_summary["weekly_activity"],
+        "calendar": streak_summary["calendar"],
+        "recent_activity": streak_summary["recent_activity"],
+        "daily_goal": daily_goal,
+        "total_minutes": streak_summary["total_minutes"],
+        "active_days": streak_summary["active_days"],
+    }
+
+
 @api_router.get("/progress/stats")
 async def get_progress_stats(request: Request):
     user = await get_current_user(request)
-    
+
     doc_count = await db.documents.count_documents({"user_id": user["id"], "is_deleted": False})
     quiz_count = await db.quizzes.count_documents({"user_id": user["id"]})
     flashcard_count = await db.flashcard_sets.count_documents({"user_id": user["id"]})
-    
-    streak = await db.streaks.find_one({"user_id": user["id"]}, {"_id": 0})
-    if not streak:
-        streak = {"current_streak": 0, "longest_streak": 0, "total_study_minutes": 0}
-    
+
+    summary = await _get_user_study_summary(user)
+
     return {
         "documents_uploaded": doc_count,
         "quizzes_taken": quiz_count,
         "flashcards_created": flashcard_count,
-        "current_streak": streak.get("current_streak", 0),
-        "longest_streak": streak.get("longest_streak", 0),
-        "total_study_minutes": streak.get("total_study_minutes", 0)
+        "current_streak": summary["current_streak"],
+        "longest_streak": summary["longest_streak"],
+        "total_study_minutes": summary["total_minutes"],
+        "total_active_days": summary["total_active_days"],
+        "daily_goal": summary["daily_goal"],
     }
+
+
+@api_router.get("/progress/summary")
+async def get_progress_summary(request: Request):
+    user = await get_current_user(request)
+    return await _get_user_study_summary(user)
+
+
+@api_router.put("/progress/daily-goal")
+async def update_daily_goal(request: Request, payload: Dict[str, Any]):
+    user = await get_current_user(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Goal payload must be an object.")
+    goal_value = payload.get("daily_goal_minutes")
+    try:
+        goal_minutes = int(goal_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="daily_goal_minutes must be an integer.") from exc
+    if goal_minutes < 15 or goal_minutes > 720:
+        raise HTTPException(status_code=400, detail="Daily goal must be between 15 and 720 minutes.")
+    await db.users.update_one({"id": user["id"]}, {"$set": {"daily_study_goal": goal_minutes}})
+    user["daily_study_goal"] = goal_minutes
+    summary = await _get_user_study_summary(user)
+    return {"daily_goal_minutes": goal_minutes, "summary": summary}
+
+
+@api_router.get("/progress/sessions")
+async def list_study_sessions(request: Request):
+    user = await get_current_user(request)
+    sessions = await _get_user_study_sessions(user["id"])
+    return sessions
+
+
+@api_router.post("/progress/sessions")
+async def create_study_session(request: Request, payload: Dict[str, Any]):
+    user = await get_current_user(request)
+    validated = validate_study_session_payload(payload)
+
+    started_ts = _parse_iso_datetime(validated["started_at"])
+    ended_ts = _parse_iso_datetime(validated["ended_at"])
+    local_tz = _user_timezone(user)
+    date_local = started_ts.astimezone(local_tz).date().isoformat()
+
+    existing_same_window = False
+    try:
+        existing_rows = await db.study_sessions.find({"user_id": user["id"], "started_at": validated["started_at"], "ended_at": validated["ended_at"]}).limit(1).to_list(1)
+        existing_same_window = bool(existing_rows)
+    except Exception:
+        existing_same_window = False
+
+    if existing_same_window:
+        raise HTTPException(status_code=409, detail="This exact study session has already been recorded.")
+
+    session_doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "started_at": validated["started_at"],
+        "ended_at": validated["ended_at"],
+        "duration_minutes": validated["duration_minutes"],
+        "session_type": validated["session_type"],
+        "note": validated["note"],
+        "date_local": date_local,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.study_sessions.insert_one(session_doc)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to save session: {exc}") from exc
+
+    summary = await _get_user_study_summary(user)
+    return {"session": session_doc, "summary": summary}
+
 
 @api_router.post("/progress/log-activity")
 async def log_activity(request: Request, activity_data: Dict[str, Any]):
     user = await get_current_user(request)
-    
-    today = datetime.now(timezone.utc).date().isoformat()
-    current_streak = 1
-    
-    streak = await db.streaks.find_one({"user_id": user["id"]})
-    if streak:
-        last_date = streak.get("last_activity_date")
-        current_streak = streak.get("current_streak", 0)
-        longest_streak = streak.get("longest_streak", 0)
-        total_minutes = streak.get("total_study_minutes", 0)
-        
-        if last_date != today:
-            if last_date == (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat():
-                current_streak += 1
-            else:
-                current_streak = 1
-            
-            longest_streak = max(longest_streak, current_streak)
-            
-            await db.streaks.update_one(
-                {"user_id": user["id"]},
-                {"$set": {
-                    "current_streak": current_streak,
-                    "longest_streak": longest_streak,
-                    "last_activity_date": today,
-                    "total_study_minutes": total_minutes + activity_data.get("study_minutes", 0)
-                }}
-            )
-    else:
-        streak_doc = {
-            "id": str(uuid.uuid4()),
-            "user_id": user["id"],
-            "current_streak": 1,
-            "longest_streak": 1,
-            "last_activity_date": today,
-            "total_study_minutes": activity_data.get("study_minutes", 0)
-        }
-        await db.streaks.insert_one(streak_doc)
-    
-    return {"message": "Activity logged", "current_streak": current_streak}
+    payload = dict(activity_data or {})
+    if not payload:
+        payload = {"started_at": datetime.now(timezone.utc).isoformat(), "ended_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(), "duration_minutes": 30}
+    validated = validate_study_session_payload(payload)
+    validated["session_type"] = payload.get("session_type") or "study"
+    validated["note"] = payload.get("note") or ""
+    request_payload = {"started_at": validated["started_at"], "ended_at": validated["ended_at"], "duration_minutes": validated["duration_minutes"], "session_type": validated["session_type"], "note": validated["note"]}
+    return await create_study_session(request, request_payload)
 
 # Notes endpoints
 @api_router.post("/notes")
@@ -3076,6 +3419,8 @@ async def startup():
     await db.quizzes.create_index("user_id")
     await db.flashcard_sets.create_index("user_id")
     await db.study_plans.create_index("user_id")
+    await db.study_sessions.create_index("user_id")
+    await db.study_sessions.create_index("date_local")
     await db.streaks.create_index("user_id")
     await db.notes.create_index("user_id")
 

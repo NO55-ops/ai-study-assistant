@@ -554,3 +554,70 @@ def test_admin_library_catalog_requires_admin(monkeypatch):
         raise AssertionError("Expected admin-only access to be rejected")
     except backend_server.HTTPException as exc:
         assert exc.status_code == 403
+
+
+def test_streak_summary_accounts_for_missed_days_and_duplicate_day_sessions():
+    sessions = [
+        {"started_at": "2026-10-01T09:00:00Z", "ended_at": "2026-10-01T10:00:00Z", "duration_minutes": 60},
+        {"started_at": "2026-10-02T09:00:00Z", "ended_at": "2026-10-02T10:00:00Z", "duration_minutes": 60},
+        {"started_at": "2026-10-02T18:00:00Z", "ended_at": "2026-10-02T18:30:00Z", "duration_minutes": 30},
+        {"started_at": "2026-10-04T08:00:00Z", "ended_at": "2026-10-04T09:00:00Z", "duration_minutes": 60},
+    ]
+
+    summary = backend_server.calculate_streak_summary(sessions=sessions, timezone_name="UTC")
+    assert summary["total_active_days"] == 3
+    assert summary["current_streak"] == 1
+    assert summary["longest_streak"] == 2
+    assert summary["active_days"] == ["2026-10-01", "2026-10-02", "2026-10-04"]
+
+
+def test_daily_goal_progress_tracks_today_minutes_and_remaining_goal():
+    goal = backend_server.build_daily_goal_progress(
+        daily_goal_minutes=90,
+        sessions=[
+            {"started_at": "2026-10-23T09:00:00Z", "ended_at": "2026-10-23T10:30:00Z", "duration_minutes": 90},
+            {"started_at": "2026-10-23T18:00:00Z", "ended_at": "2026-10-23T18:15:00Z", "duration_minutes": 15},
+        ],
+        today_iso="2026-10-23",
+    )
+
+    assert goal["minutes_completed"] == 105
+    assert goal["minutes_remaining"] == 0
+    assert goal["progress_percent"] == 100
+    assert goal["goal_reached"] is True
+
+
+def test_validate_study_session_rejects_invalid_or_manipulated_durations():
+    try:
+        backend_server.validate_study_session_payload({"duration_minutes": 0, "started_at": "2026-10-23T09:00:00Z", "ended_at": "2026-10-23T09:30:00Z"})
+        raise AssertionError("Expected invalid duration to be rejected")
+    except ValueError as exc:
+        assert "at least" in str(exc).lower()
+
+    try:
+        backend_server.validate_study_session_payload({"duration_minutes": 1200, "started_at": "2026-10-23T09:00:00Z", "ended_at": "2026-10-23T09:30:00Z"})
+        raise AssertionError("Expected over-limit duration to be rejected")
+    except ValueError as exc:
+        assert "too long" in str(exc).lower()
+
+
+def test_user_activity_filter_keeps_records_isolated_to_logged_in_user():
+    sessions = [
+        {"user_id": "u-1", "date_local": "2026-10-23", "duration_minutes": 30},
+        {"user_id": "u-2", "date_local": "2026-10-23", "duration_minutes": 45},
+    ]
+
+    filtered = backend_server.filter_user_study_sessions(sessions, user_id="u-1")
+    assert len(filtered) == 1
+    assert filtered[0]["user_id"] == "u-1"
+
+
+def test_streak_summary_handles_timezone_boundary_days():
+    sessions = [
+        {"started_at": "2026-10-23T23:30:00-05:00", "ended_at": "2026-10-24T00:15:00-05:00", "duration_minutes": 45},
+        {"started_at": "2026-10-24T00:30:00-05:00", "ended_at": "2026-10-24T01:00:00-05:00", "duration_minutes": 30},
+    ]
+
+    summary = backend_server.calculate_streak_summary(sessions=sessions, timezone_name="America/New_York")
+    assert summary["total_active_days"] == 2
+    assert summary["active_days"] == ["2026-10-23", "2026-10-24"]
