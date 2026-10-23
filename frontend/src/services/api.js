@@ -67,6 +67,14 @@ export const flashcardService = {
   },
 };
 
+export const libraryService = {
+  listQualifications: () => api.get('/library/qualifications'),
+  getQualification: (slug) => api.get(`/library/qualifications/${slug}`),
+  listSubjects: (qualificationSlug) => api.get(`/library/qualifications/${qualificationSlug}/subjects`),
+  getSubject: (qualificationSlug, subjectSlug) => api.get(`/library/qualifications/${qualificationSlug}/subjects/${subjectSlug}`),
+  getTopic: (qualificationSlug, subjectSlug, topicSlug) => api.get(`/library/qualifications/${qualificationSlug}/subjects/${subjectSlug}/topics/${topicSlug}`),
+};
+
 export const notesService = {
   list: async () => {
     const resp = await api.get('/notes');

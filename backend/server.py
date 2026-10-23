@@ -23,6 +23,8 @@ import bcrypt
 import jwt
 import requests
 import io
+import re
+import copy
 from PyPDF2 import PdfReader
 from docx import Document as DocxDocument
 from pptx import Presentation
@@ -34,8 +36,125 @@ load_dotenv(ROOT_DIR / '.env')
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+ALLOW_LOCAL_LIBRARY_FALLBACK = os.environ.get("ALLOW_LOCAL_LIBRARY_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}
+HAS_REAL_SUPABASE = bool(create_client is not None and SUPABASE_URL and SUPABASE_KEY)
 
 MEMORY_STORE: Dict[str, List[Dict[str, Any]]] = {}
+
+DEFAULT_LIBRARY_CATALOG = {
+    "qualifications": [
+        {
+            "id": "cambridge-igcse",
+            "slug": "cambridge-igcse",
+            "name": "Cambridge IGCSE",
+            "status": "published",
+            "long_name": "Cambridge IGCSE",
+            "description": "A curated sample catalog for inquiry-led study, starting with International Mathematics 0607 Extended.",
+            "subjects": [
+                {
+                    "id": "international-mathematics-0607-extended",
+                    "slug": "international-mathematics-0607-extended",
+                    "name": "International Mathematics 0607 Extended",
+                    "code": "0607",
+                    "status": "published",
+                    "description": "Sample topic content for review. Final syllabus version should be confirmed before labeling as fully syllabus-aligned.",
+                    "topics": [
+                        {
+                            "id": "quadratic-equations",
+                            "slug": "quadratic-equations",
+                            "title": "Quadratic Equations",
+                            "status": "published",
+                            "summary": "Solve, sketch, and interpret quadratic equations in context.",
+                            "syllabus_note": "Sample topic content for review. Confirm the final Cambridge syllabus version before labeling this as fully syllabus-aligned.",
+                            "notes": [
+                                {
+                                    "heading": "Core idea",
+                                    "content": [
+                                        "A quadratic equation is any equation that can be written in the form a x^2 + b x + c = 0, where a, b, and c are constants and a ≠ 0.",
+                                        "The solutions are the x-values that make the expression equal to zero. These are called roots or zeroes.",
+                                        "Quadratic equations are often used to model motion, area, and optimization problems."
+                                    ]
+                                },
+                                {
+                                    "heading": "Methods of solving",
+                                    "content": [
+                                        "Factorisation is often the quickest route when the expression factors neatly.",
+                                        "The quadratic formula works for all quadratics and is especially useful when factorisation is not straightforward.",
+                                        "Completing the square helps reveal the vertex form and is useful for graph interpretation."
+                                    ]
+                                }
+                            ],
+                            "formulae": [
+                                "ax^2 + bx + c = 0",
+                                "x = (-b ± √(b^2 - 4ac)) / 2a",
+                                "The discriminant is Δ = b^2 - 4ac",
+                                "If Δ > 0, there are two distinct real roots; if Δ = 0, one repeated root; if Δ < 0, no real roots."
+                            ],
+                            "worked_examples": [
+                                {
+                                    "question": "Solve x^2 - 5x + 6 = 0.",
+                                    "steps": [
+                                        "Factor the quadratic: (x - 2)(x - 3) = 0.",
+                                        "Set each bracket equal to zero: x - 2 = 0 or x - 3 = 0.",
+                                        "Therefore, x = 2 or x = 3."
+                                    ],
+                                    "answer": "x = 2 or x = 3."
+                                },
+                                {
+                                    "question": "Solve 2x^2 + 3x - 2 = 0 using the quadratic formula.",
+                                    "steps": [
+                                        "Identify a = 2, b = 3, c = -2.",
+                                        "Use x = (-b ± √(b^2 - 4ac)) / 2a = (-3 ± √(9 + 16)) / 4 = (-3 ± 5) / 4.",
+                                        "So x = 2/4 = 0.5 or x = -8/4 = -2."
+                                    ],
+                                    "answer": "x = 0.5 or x = -2."
+                                }
+                            ],
+                            "exam_tips": [
+                                "Always check whether the equation is already in standard form before applying a method.",
+                                "If the coefficient in front of x^2 is not 1, look carefully before deciding whether factorisation is possible.",
+                                "Use the discriminant to classify the number of real solutions quickly."
+                            ],
+                            "common_mistakes": [
+                                "Forgetting that the quadratic formula uses b^2 - 4ac, not b^2 + 4ac.",
+                                "Stopping after finding one root when the equation has two solutions.",
+                                "Misreading the sign when solving with a negative constant term."
+                            ],
+                            "flashcards": [
+                                {"front": "What is a quadratic equation?", "back": "An equation of the form ax^2 + bx + c = 0, where a ≠ 0."},
+                                {"front": "What does the discriminant tell us?", "back": "It tells us the number and type of real roots: Δ > 0 gives two real roots, Δ = 0 gives one repeated root, and Δ < 0 gives no real roots."},
+                                {"front": "What is the standard quadratic formula?", "back": "x = (-b ± √(b^2 - 4ac)) / 2a."}
+                            ],
+                            "practice_questions": [
+                                {
+                                    "question": "Solve x^2 - 9 = 0.",
+                                    "options": ["x = 3 only", "x = -3 only", "x = 3 or x = -3", "x = 9"],
+                                    "correct_answer": "C",
+                                    "answer": "x = 3 or x = -3.",
+                                    "explanation": "The equation factors as (x - 3)(x + 3) = 0, so both values make the product zero."
+                                },
+                                {
+                                    "question": "For x^2 - 4x + 4 = 0, how many real solutions does it have?",
+                                    "options": ["None", "One repeated root", "Two distinct roots", "Three roots"],
+                                    "correct_answer": "B",
+                                    "answer": "One repeated root.",
+                                    "explanation": "The discriminant is 0 because (-4)^2 - 4(1)(4) = 0, which indicates exactly one repeated real root."
+                                }
+                            ],
+                            "resources": [
+                                {
+                                    "type": "summary",
+                                    "title": "Quadratics at a glance",
+                                    "content": "Factorise or use the formula. Check the discriminant to predict the number of real roots before solving."
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}
 
 
 def normalize_record(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -71,6 +190,736 @@ def ensure_response_id(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
     if "id" not in normalized:
         normalized["id"] = str(uuid.uuid4())
     return normalized
+
+
+def strip_markdown_fences(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+def validate_quiz_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Quiz response must be a JSON object.")
+
+    questions = payload.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise ValueError("Quiz response must include a non-empty 'questions' array.")
+
+    cleaned_questions: List[Dict[str, Any]] = []
+    allowed_question_types = {"multiple_choice", "true_false", "short_answer"}
+
+    for index, item in enumerate(questions, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Question {index} must be an object.")
+
+        q_type = str(item.get("type", "")).strip().lower()
+        if q_type not in allowed_question_types:
+            raise ValueError(f"Question {index} has unsupported type '{item.get('type')}'.")
+
+        question_text = str(item.get("question", "")).strip()
+        if not question_text:
+            raise ValueError(f"Question {index} is missing 'question'.")
+
+        explanation = str(item.get("explanation", "")).strip()
+        if not explanation:
+            raise ValueError(f"Question {index} is missing 'explanation'.")
+
+        if q_type == "multiple_choice":
+            options = item.get("options")
+            if not isinstance(options, list) or len(options) < 2:
+                raise ValueError(f"Question {index} must include at least two answer options.")
+            normalized_options = [str(opt).strip() for opt in options]
+            normalized_options = [opt for opt in normalized_options if opt]
+            if len(normalized_options) < 2:
+                raise ValueError(f"Question {index} has empty or invalid answer choices.")
+
+            correct_answer = str(item.get("correct_answer", "")).strip()
+            if not correct_answer:
+                raise ValueError(f"Question {index} is missing 'correct_answer'.")
+
+            if correct_answer.upper() in {"A", "B", "C", "D"}:
+                index_value = ord(correct_answer.upper()) - ord("A")
+                if index_value >= len(normalized_options):
+                    raise ValueError(f"Question {index} has a correct answer label that does not match the answer choices.")
+            elif correct_answer not in normalized_options:
+                raise ValueError(f"Question {index} has a correct answer that is not present in the options.")
+
+            cleaned_questions.append({
+                "type": "multiple_choice",
+                "question": question_text,
+                "options": normalized_options,
+                "correct_answer": correct_answer.upper() if correct_answer.upper() in {"A", "B", "C", "D"} else correct_answer,
+                "explanation": explanation,
+            })
+            continue
+
+        if q_type == "true_false":
+            correct_answer = str(item.get("correct_answer", "")).strip().lower()
+            if correct_answer not in {"true", "false", "a", "b"}:
+                raise ValueError(f"Question {index} must use 'true'/'false' or 'A'/'B' as the correct answer.")
+            cleaned_questions.append({
+                "type": "true_false",
+                "question": question_text,
+                "options": ["True", "False"],
+                "correct_answer": "A" if correct_answer in {"true", "a"} else "B",
+                "explanation": explanation,
+            })
+            continue
+
+        answer = str(item.get("answer", item.get("correct_answer", ""))).strip()
+        if not answer:
+            raise ValueError(f"Question {index} is missing the answer for a short-answer question.")
+        cleaned_questions.append({
+            "type": "short_answer",
+            "question": question_text,
+            "answer": answer,
+            "explanation": explanation,
+        })
+
+    return {"questions": cleaned_questions}
+
+
+def _require_library_seed_field(item: Dict[str, Any], field_name: str, path: str) -> Any:
+    value = item.get(field_name)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"Library seed field '{field_name}' is required at {path}.")
+    return value
+
+
+def _slugify_library_name(value: Any) -> str:
+    candidate = str(value or "").strip().lower()
+    candidate = re.sub(r"[^a-z0-9]+", "-", candidate)
+    candidate = re.sub(r"-+", "-", candidate).strip("-")
+    return candidate or "resource"
+
+
+def _build_unique_resource_slug(topic_slug: str, resource_title: str, seen: Optional[set] = None) -> str:
+    base = _slugify_library_name(f"{topic_slug}-{resource_title}")
+    if not base:
+        base = _slugify_library_name(topic_slug or "resource")
+    slug = base
+    index = 2
+    container = seen if seen is not None else set()
+    while slug in container:
+        slug = f"{base}-{index}"
+        index += 1
+    if seen is not None:
+        container.add(slug)
+    return slug
+
+
+def _coerce_library_payload(resource_type: str, value: Any, original: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, list):
+        return {resource_type: copy.deepcopy(value)}
+    if value is None:
+        if isinstance(original, dict):
+            payload = {k: copy.deepcopy(v) for k, v in original.items() if k not in {"resource_type", "slug", "title", "status", "type"}}
+            if payload:
+                return payload
+        return {resource_type: []}
+    if isinstance(value, str):
+        return {resource_type: value}
+    return {resource_type: copy.deepcopy(value)}
+
+
+def _convert_topic_resources_to_seed(topic: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(topic, dict):
+        return []
+
+    topic_slug = str(topic.get("slug") or topic.get("id") or "topic")
+    topic_title = str(topic.get("title") or topic.get("name") or topic_slug)
+    used_slugs = set()
+    resources: List[Dict[str, Any]] = []
+    existing_resource_types = set()
+
+    for existing in topic.get("resources", []) or []:
+        if not isinstance(existing, dict):
+            continue
+        resource_type = str(existing.get("resource_type") or existing.get("type") or "summary").strip().lower() or "summary"
+        resource_title = str(existing.get("title") or existing.get("name") or resource_type.replace("_", " ").title())
+        payload = existing.get("payload")
+        if payload is None:
+            payload = {}
+            if "content" in existing:
+                payload = {"content": copy.deepcopy(existing.get("content"))}
+            else:
+                payload = {k: copy.deepcopy(v) for k, v in existing.items() if k not in {"type", "resource_type", "title", "name", "status", "slug"}}
+        if not isinstance(payload, dict):
+            payload = {"content": copy.deepcopy(payload)}
+        resource_title = str(existing.get("title") or resource_title)
+        resources.append({
+            "slug": _build_unique_resource_slug(topic_slug, resource_title, used_slugs),
+            "resource_type": resource_type,
+            "title": resource_title,
+            "status": str(existing.get("status", topic.get("status", "published"))).lower(),
+            "payload": payload,
+        })
+        existing_resource_types.add(resource_type)
+
+    summary_payload = {
+        key: copy.deepcopy(value)
+        for key, value in {
+            "summary": topic.get("summary"),
+            "syllabus_note": topic.get("syllabus_note"),
+            "description": topic.get("description"),
+        }.items()
+        if value is not None
+    }
+    if summary_payload and "summary" not in existing_resource_types:
+        summary_title = f"{topic_title} Summary"
+        payload = dict(summary_payload)
+        if "summary" in payload and not isinstance(payload.get("summary"), dict):
+            payload["content"] = payload.pop("summary")
+        elif "description" in payload and "content" not in payload:
+            payload["content"] = payload.pop("description")
+        resources.append({
+            "slug": _build_unique_resource_slug(topic_slug, summary_title, used_slugs),
+            "resource_type": "summary",
+            "title": summary_title,
+            "status": str(topic.get("status", "published")).lower(),
+            "payload": payload,
+        })
+
+    section_mapping = [
+        ("notes", "notes", "Notes"),
+        ("formulae", "formulae", "Formulae"),
+        ("worked_examples", "worked_examples", "Worked examples"),
+        ("exam_tips", "exam_tips", "Exam tips"),
+        ("common_mistakes", "common_mistakes", "Common mistakes"),
+        ("flashcards", "flashcards", "Flashcards"),
+        ("practice_questions", "practice_questions", "Practice questions"),
+    ]
+    for key, resource_type, label in section_mapping:
+        if resource_type in existing_resource_types:
+            continue
+        section_value = topic.get(key)
+        if section_value is None:
+            continue
+        payload = _coerce_library_payload(resource_type, section_value)
+        resource_title = f"{topic_title} {label}"
+        resources.append({
+            "slug": _build_unique_resource_slug(topic_slug, resource_title, used_slugs),
+            "resource_type": resource_type,
+            "title": resource_title,
+            "status": str(topic.get("status", "published")).lower(),
+            "payload": payload,
+        })
+
+    return resources
+
+
+def convert_default_library_catalog_to_seed(catalog: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    source = copy.deepcopy(catalog if isinstance(catalog, dict) else DEFAULT_LIBRARY_CATALOG)
+    if not isinstance(source, dict):
+        raise ValueError("Library catalog must be an object.")
+
+    qualifications = source.get("qualifications")
+    if not isinstance(qualifications, list):
+        raise ValueError("Library catalog must include a 'qualifications' list.")
+
+    converted: List[Dict[str, Any]] = []
+    for qualification_index, qualification in enumerate(qualifications):
+        if not isinstance(qualification, dict):
+            raise ValueError(f"Qualification at index {qualification_index} must be an object.")
+        qualification_slug = str(qualification.get("slug") or qualification.get("id") or f"qualification-{qualification_index}")
+        qualification_name = str(qualification.get("name") or qualification_slug)
+        qualification_status = str(qualification.get("status", "published")).lower()
+
+        subjects = qualification.get("subjects", []) or []
+        converted_subjects: List[Dict[str, Any]] = []
+        for subject_index, subject in enumerate(subjects):
+            if not isinstance(subject, dict):
+                continue
+            subject_slug = str(subject.get("slug") or subject.get("id") or f"subject-{subject_index}")
+            subject_name = str(subject.get("name") or subject_slug)
+            subject_status = str(subject.get("status", "published")).lower()
+            topics = subject.get("topics", []) or []
+            converted_topics: List[Dict[str, Any]] = []
+            for topic_index, topic in enumerate(topics):
+                if not isinstance(topic, dict):
+                    continue
+                topic_slug = str(topic.get("slug") or topic.get("id") or f"topic-{topic_index}")
+                topic_title = str(topic.get("title") or topic.get("name") or topic_slug)
+                converted_topics.append({
+                    "slug": topic_slug,
+                    "title": topic_title,
+                    "status": str(topic.get("status", "published")).lower(),
+                    "resources": _convert_topic_resources_to_seed(topic),
+                })
+            converted_subjects.append({
+                "slug": subject_slug,
+                "name": subject_name,
+                "status": subject_status,
+                "topics": converted_topics,
+            })
+        converted.append({
+            "slug": qualification_slug,
+            "name": qualification_name,
+            "status": qualification_status,
+            "subjects": converted_subjects,
+        })
+
+    return {"qualifications": converted}
+
+
+def validate_library_seed(seed: Any) -> Dict[str, Any]:
+    if not isinstance(seed, dict):
+        raise ValueError("Library seed must be an object.")
+
+    qualifications = seed.get("qualifications")
+    if not isinstance(qualifications, list) or not qualifications:
+        raise ValueError("Library seed must include a non-empty 'qualifications' list.")
+    normalized_qualifications: List[Dict[str, Any]] = []
+    for qualification_index, qualification in enumerate(qualifications):
+        if not isinstance(qualification, dict):
+            raise ValueError(f"Qualification at index {qualification_index} must be an object.")
+        qualification_path = f"qualifications[{qualification_index}]"
+        qualification_slug = _require_library_seed_field(qualification, "slug", qualification_path)
+        name = _require_library_seed_field(qualification, "name", qualification_path)
+        status = str(qualification.get("status", "published")).lower()
+
+        subjects = qualification.get("subjects", [])
+        if subjects is None:
+            subjects = []
+        if not isinstance(subjects, list):
+            raise ValueError(f"Qualification '{qualification_slug}' must include a 'subjects' list.")
+
+        normalized_subjects: List[Dict[str, Any]] = []
+        for subject_index, subject in enumerate(subjects):
+            if not isinstance(subject, dict):
+                raise ValueError(f"Subject at '{qualification_path}.subjects[{subject_index}]' must be an object.")
+            subject_path = f"{qualification_path}.subjects[{subject_index}]"
+            subject_slug = _require_library_seed_field(subject, "slug", subject_path)
+            subject_name = _require_library_seed_field(subject, "name", subject_path)
+            subject_status = str(subject.get("status", "published")).lower()
+
+            topics = subject.get("topics", [])
+            if topics is None:
+                topics = []
+            if not isinstance(topics, list):
+                raise ValueError(f"Subject '{subject_slug}' must include a 'topics' list.")
+
+            normalized_topics: List[Dict[str, Any]] = []
+            for topic_index, topic in enumerate(topics):
+                if not isinstance(topic, dict):
+                    raise ValueError(f"Topic at '{subject_path}.topics[{topic_index}]' must be an object.")
+                topic_path = f"{subject_path}.topics[{topic_index}]"
+                topic_slug = _require_library_seed_field(topic, "slug", topic_path)
+                title = _require_library_seed_field(topic, "title", topic_path)
+                topic_status = str(topic.get("status", "published")).lower()
+
+                resources = topic.get("resources", [])
+                if resources is None:
+                    resources = []
+                if not isinstance(resources, list):
+                    raise ValueError(f"Topic '{topic_slug}' must include a 'resources' list.")
+
+                normalized_resources: List[Dict[str, Any]] = []
+                used_slugs = set()
+                for resource_index, resource in enumerate(resources):
+                    if not isinstance(resource, dict):
+                        raise ValueError(f"Resource at '{topic_path}.resources[{resource_index}]' must be an object.")
+                    resource_path = f"{topic_path}.resources[{resource_index}]"
+                    resource_slug = str(resource.get("slug") or _build_unique_resource_slug(str(topic_slug), str(resource.get("title") or f"resource-{resource_index}"), used_slugs)).strip()
+                    resource_type = _require_library_seed_field(resource, "resource_type", resource_path)
+                    resource_title = _require_library_seed_field(resource, "title", resource_path)
+                    resource_status = str(resource.get("status", "published")).lower()
+                    payload = resource.get("payload")
+                    if payload is None or not isinstance(payload, dict):
+                        raise ValueError(f"Resource '{resource_title}' at {resource_path} must include a dictionary 'payload'.")
+                    normalized_resources.append({
+                        "slug": resource_slug,
+                        "resource_type": str(resource_type),
+                        "title": str(resource_title),
+                        "status": resource_status,
+                        "payload": payload,
+                    })
+
+                normalized_topics.append({
+                    "slug": str(topic_slug),
+                    "title": str(title),
+                    "status": topic_status,
+                    "resources": normalized_resources,
+                })
+
+            normalized_subjects.append({
+                "slug": str(subject_slug),
+                "name": str(subject_name),
+                "status": subject_status,
+                "topics": normalized_topics,
+            })
+
+        normalized_qualifications.append({
+            "slug": str(qualification_slug),
+            "name": str(name),
+            "status": status,
+            "subjects": normalized_subjects,
+        })
+
+    return {"qualifications": normalized_qualifications}
+
+
+def _call_db_action(func, *args, **kwargs):
+    result = func(*args, **kwargs)
+    if hasattr(result, "__await__"):
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(result)
+
+        import threading
+
+        captured = {}
+
+        def runner():
+            local_loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(local_loop)
+                captured["value"] = local_loop.run_until_complete(result)
+            finally:
+                local_loop.close()
+                asyncio.set_event_loop(None)
+
+        thread = threading.Thread(target=runner)
+        thread.start()
+        thread.join()
+        return captured.get("value")
+    return result
+
+
+def _unwrap_db_rows(result: Any) -> List[Dict[str, Any]]:
+    if result is None:
+        return []
+    if hasattr(result, "data"):
+        payload = result.data
+    elif isinstance(result, dict) and "data" in result:
+        payload = result["data"]
+    else:
+        payload = result
+
+    if isinstance(payload, list):
+        return [dict(item) if isinstance(item, dict) else item for item in payload]
+    if isinstance(payload, dict):
+        return [dict(payload)]
+    return []
+
+
+def _unwrap_db_record(result: Any) -> Optional[Dict[str, Any]]:
+    rows = _unwrap_db_rows(result)
+    return rows[0] if rows else None
+
+
+def _db_has_library_catalog(db: Any) -> bool:
+    if db is None:
+        return False
+    if hasattr(db, "library_qualifications") and hasattr(db, "library_subjects") and hasattr(db, "library_topics") and hasattr(db, "library_resources"):
+        return True
+    rows = getattr(db, "rows", None)
+    if isinstance(rows, dict):
+        return all(table_name in rows for table_name in ["library_qualifications", "library_subjects", "library_topics", "library_resources"])
+    return False
+
+
+def _db_table_rows(db: Any, table_name: str):
+    if hasattr(db, table_name):
+        collection = getattr(db, table_name)
+        if hasattr(collection, "find"):
+            rows = _call_db_action(collection.find({}).to_list, 1000)
+            normalized_rows = _unwrap_db_rows(rows)
+            return normalized_rows if normalized_rows else []
+        if hasattr(collection, "select"):
+            result = _call_db_action(collection.select, "*")
+            normalized_rows = _unwrap_db_rows(result)
+            return normalized_rows if normalized_rows else []
+    rows = getattr(db, "rows", None)
+    if isinstance(rows, dict):
+        return list(rows.get(table_name, []))
+    return []
+
+
+def _db_table_exists(db: Any, table_name: str) -> bool:
+    if hasattr(db, table_name):
+        return True
+    rows = getattr(db, "rows", None)
+    return isinstance(rows, dict) and table_name in rows
+
+
+def _db_insert(db: Any, table_name: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    if hasattr(db, table_name):
+        collection = getattr(db, table_name)
+        if hasattr(collection, "insert_one"):
+            inserted = _call_db_action(collection.insert_one, item)
+            normalized = _unwrap_db_record(inserted)
+            return normalized if isinstance(normalized, dict) else dict(item)
+    if hasattr(db, "insert_one"):
+        inserted = _call_db_action(db.insert_one, {**item, "_table": table_name})
+        normalized = _unwrap_db_record(inserted)
+        return normalized if isinstance(normalized, dict) else {**item, "_table": table_name}
+    rows = getattr(db, "rows", None)
+    if isinstance(rows, dict):
+        row_payload = dict(item)
+        row_payload["_table"] = table_name
+        rows.setdefault(table_name, []).append(row_payload)
+        return row_payload
+    raise RuntimeError("Library catalog database is not configured.")
+
+
+def _db_find_one(db: Any, table_name: str, query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if hasattr(db, table_name):
+        collection = getattr(db, table_name)
+        if hasattr(collection, "find_one"):
+            found = _call_db_action(collection.find_one, query)
+            normalized = _unwrap_db_record(found)
+            return normalized if isinstance(normalized, dict) else None
+    rows = getattr(db, "rows", None)
+    if isinstance(rows, dict):
+        for record in rows.get(table_name, []):
+            if all(record.get(k) == v for k, v in query.items()):
+                return dict(record)
+    return None
+
+
+def import_library_seed(seed: Any, db: Optional[Any] = None, report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    validated = validate_library_seed(seed)
+    active_db = db if db is not None else globals().get("db")
+    if active_db is None or not _db_has_library_catalog(active_db):
+        raise RuntimeError("Library catalog database is not configured.")
+
+    counters = report if isinstance(report, dict) else {
+        "created": {"library_qualifications": 0, "library_subjects": 0, "library_topics": 0, "library_resources": 0},
+        "skipped": {"library_qualifications": 0, "library_subjects": 0, "library_topics": 0, "library_resources": 0},
+        "failed": {"library_qualifications": 0, "library_subjects": 0, "library_topics": 0, "library_resources": 0},
+        "errors": [],
+    }
+    imported = {"qualifications": []}
+
+    for qualification in validated["qualifications"]:
+        qualification_key = {"slug": qualification["slug"]}
+        try:
+            if _db_find_one(active_db, "library_qualifications", qualification_key) is None:
+                qual_doc = {"slug": qualification["slug"], "name": qualification["name"], "status": qualification.get("status", "published")}
+                _db_insert(active_db, "library_qualifications", qual_doc)
+                counters["created"]["library_qualifications"] += 1
+            else:
+                counters["skipped"]["library_qualifications"] += 1
+        except Exception as exc:
+            counters["failed"]["library_qualifications"] += 1
+            counters["errors"].append({"table": "library_qualifications", "slug": qualification["slug"], "error": str(exc)})
+
+        for subject in qualification["subjects"]:
+            subject_key = {"slug": subject["slug"], "qualification_slug": qualification["slug"]}
+            try:
+                if _db_find_one(active_db, "library_subjects", subject_key) is None:
+                    _db_insert(active_db, "library_subjects", {
+                        "slug": subject["slug"],
+                        "qualification_slug": qualification["slug"],
+                        "name": subject["name"],
+                        "status": subject.get("status", "published"),
+                    })
+                    counters["created"]["library_subjects"] += 1
+                else:
+                    counters["skipped"]["library_subjects"] += 1
+            except Exception as exc:
+                counters["failed"]["library_subjects"] += 1
+                counters["errors"].append({"table": "library_subjects", "slug": subject["slug"], "error": str(exc)})
+
+            for topic in subject["topics"]:
+                topic_key = {"slug": topic["slug"], "subject_slug": subject["slug"]}
+                try:
+                    if _db_find_one(active_db, "library_topics", topic_key) is None:
+                        _db_insert(active_db, "library_topics", {
+                            "slug": topic["slug"],
+                            "subject_slug": subject["slug"],
+                            "title": topic["title"],
+                            "status": topic.get("status", "published"),
+                        })
+                        counters["created"]["library_topics"] += 1
+                    else:
+                        counters["skipped"]["library_topics"] += 1
+                except Exception as exc:
+                    counters["failed"]["library_topics"] += 1
+                    counters["errors"].append({"table": "library_topics", "slug": topic["slug"], "error": str(exc)})
+
+                for resource in topic["resources"]:
+                    resource_key = {"slug": resource.get("slug") or resource.get("title", topic["slug"]), "topic_slug": topic["slug"]}
+                    try:
+                        if _db_find_one(active_db, "library_resources", resource_key) is None:
+                            _db_insert(active_db, "library_resources", {
+                                "slug": resource.get("slug") or resource.get("title", topic["slug"]),
+                                "topic_slug": topic["slug"],
+                                "resource_type": resource["resource_type"],
+                                "title": resource["title"],
+                                "status": resource.get("status", "published"),
+                                "payload": resource["payload"],
+                            })
+                            counters["created"]["library_resources"] += 1
+                        else:
+                            counters["skipped"]["library_resources"] += 1
+                    except Exception as exc:
+                        counters["failed"]["library_resources"] += 1
+                        counters["errors"].append({"table": "library_resources", "slug": resource.get("slug") or resource.get("title", topic["slug"]), "error": str(exc)})
+        imported["qualifications"].append(qualification)
+
+    if report is None:
+        return imported
+    return counters
+
+
+def import_default_library_catalog(seed: Optional[Any] = None, db: Optional[Any] = None) -> Dict[str, Any]:
+    catalog_seed = convert_default_library_catalog_to_seed(seed if isinstance(seed, dict) else DEFAULT_LIBRARY_CATALOG)
+    report = {
+        "created": {"library_qualifications": 0, "library_subjects": 0, "library_topics": 0, "library_resources": 0},
+        "skipped": {"library_qualifications": 0, "library_subjects": 0, "library_topics": 0, "library_resources": 0},
+        "failed": {"library_qualifications": 0, "library_subjects": 0, "library_topics": 0, "library_resources": 0},
+        "errors": [],
+        "status": "ok",
+    }
+    import_library_seed(catalog_seed, db=db, report=report)
+    if any(report["failed"].values()):
+        report["status"] = "partial_failure"
+    return report
+
+
+def get_published_library_catalog(db: Optional[Any] = None) -> Dict[str, Any]:
+    active_db = db if db is not None else globals().get("db")
+    default_db = globals().get("db")
+    is_default_local_db = (not HAS_REAL_SUPABASE) and (active_db is default_db)
+    memory_catalog = MEMORY_STORE.get("library_catalog")
+
+    if isinstance(memory_catalog, dict) and ALLOW_LOCAL_LIBRARY_FALLBACK and is_default_local_db:
+        filtered = _filter_published_library_item(memory_catalog)
+        if isinstance(filtered, dict):
+            return {"qualifications": filtered.get("qualifications", [])}
+
+    if active_db is None:
+        if not ALLOW_LOCAL_LIBRARY_FALLBACK:
+            raise RuntimeError("Library catalog database is not configured and local fallback is disabled. Set ALLOW_LOCAL_LIBRARY_FALLBACK=1 only for explicit local development.")
+        default_catalog = _filter_published_library_item(DEFAULT_LIBRARY_CATALOG)
+        if isinstance(default_catalog, dict):
+            return {"qualifications": default_catalog.get("qualifications", [])}
+        return {"qualifications": []}
+
+    if not HAS_REAL_SUPABASE and is_default_local_db:
+        if not ALLOW_LOCAL_LIBRARY_FALLBACK:
+            raise RuntimeError("Library catalog database is not configured and local fallback is disabled. Set ALLOW_LOCAL_LIBRARY_FALLBACK=1 only for explicit local development.")
+        if isinstance(memory_catalog, dict):
+            filtered = _filter_published_library_item(memory_catalog)
+            if isinstance(filtered, dict):
+                return {"qualifications": filtered.get("qualifications", [])}
+        default_catalog = _filter_published_library_item(DEFAULT_LIBRARY_CATALOG)
+        if isinstance(default_catalog, dict):
+            return {"qualifications": default_catalog.get("qualifications", [])}
+        return {"qualifications": []}
+
+    if not _db_has_library_catalog(active_db):
+        raise RuntimeError("Library catalog database is not configured.")
+
+    try:
+        qualifications = []
+        for row in _db_table_rows(active_db, "library_qualifications"):
+            row = dict(row)
+            slug = str(row.get("slug") or row.get("id") or "")
+            if not slug:
+                continue
+            subject_rows = []
+            for subject_row in _db_table_rows(active_db, "library_subjects"):
+                subject_record = dict(subject_row)
+                if str(subject_record.get("qualification_slug") or subject_record.get("qualification_id")) == slug:
+                    subject_slug = str(subject_record.get("slug") or subject_record.get("id") or "")
+                    if not subject_slug:
+                        continue
+                    topics = []
+                    for topic_row in _db_table_rows(active_db, "library_topics"):
+                        topic_record = dict(topic_row)
+                        if str(topic_record.get("subject_slug") or topic_record.get("subject_id")) == subject_slug:
+                            resource_rows = []
+                            for resource_row in _db_table_rows(active_db, "library_resources"):
+                                resource_record = dict(resource_row)
+                                if str(resource_record.get("topic_slug") or resource_record.get("topic_id")) == str(topic_record.get("slug") or topic_record.get("id") or ""):
+                                    resource_rows.append({
+                                        "resource_type": resource_record.get("resource_type", "notes"),
+                                        "title": resource_record.get("title", "Untitled"),
+                                        "status": resource_record.get("status", "published"),
+                                        "payload": resource_record.get("payload", {}),
+                                    })
+                            topics.append({
+                                "slug": str(topic_record.get("slug") or topic_record.get("id") or ""),
+                                "title": topic_record.get("title", "Untitled"),
+                                "status": topic_record.get("status", "published"),
+                                "resources": resource_rows,
+                            })
+                    subject_rows.append({
+                        "slug": subject_slug,
+                        "name": subject_record.get("name", subject_slug),
+                        "status": subject_record.get("status", "published"),
+                        "topics": topics,
+                    })
+            qualifications.append({
+                "slug": slug,
+                "name": row.get("name", slug),
+                "status": row.get("status", "published"),
+                "subjects": subject_rows,
+            })
+    except Exception as exc:
+        raise RuntimeError(f"Library catalog database query failed: {exc}") from exc
+
+    if qualifications:
+        catalog = {"qualifications": qualifications}
+        filtered = _filter_published_library_item(catalog)
+        return filtered if isinstance(filtered, dict) else {"qualifications": []}
+
+    return {"qualifications": []}
+
+
+def _get_published_library_catalog() -> Dict[str, Any]:
+    return get_published_library_catalog()
+
+
+def _filter_published_library_item(item: Any) -> Any:
+    if isinstance(item, list):
+        cleaned = []
+        for child in item:
+            filtered = _filter_published_library_item(child)
+            if filtered is not None:
+                cleaned.append(filtered)
+        return cleaned
+
+    if isinstance(item, dict):
+        if "status" in item and str(item.get("status", "published")).lower() != "published":
+            return None
+
+        filtered = {}
+        for key, value in item.items():
+            if key == "status" and value is None:
+                continue
+
+            if isinstance(value, list):
+                nested = _filter_published_library_item(value)
+                if nested:
+                    filtered[key] = nested
+            elif isinstance(value, dict):
+                nested = _filter_published_library_item(value)
+                if nested is not None:
+                    filtered[key] = nested
+            else:
+                filtered[key] = value
+        return filtered
+
+    return item
+
+
+def _find_library_qualification(qualifications: List[Dict[str, Any]], slug: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(qualifications, list):
+        return None
+    return next((item for item in qualifications if str(item.get("slug")) == str(slug)), None)
 
 
 class MemoryResult:
@@ -358,10 +1207,16 @@ class SupabaseDatabase:
     documents = SupabaseCollection("documents")
     summaries = SupabaseCollection("summaries")
     quizzes = SupabaseCollection("quizzes")
+    question_sets = SupabaseCollection("question_sets")
+    question_set_questions = SupabaseCollection("question_set_questions")
     flashcard_sets = SupabaseCollection("flashcard_sets")
     study_plans = SupabaseCollection("study_plans")
     streaks = SupabaseCollection("streaks")
     notes = SupabaseCollection("notes")
+    library_qualifications = SupabaseCollection("library_qualifications")
+    library_subjects = SupabaseCollection("library_subjects")
+    library_topics = SupabaseCollection("library_topics")
+    library_resources = SupabaseCollection("library_resources")
 
 
 db = SupabaseDatabase()
@@ -420,21 +1275,35 @@ async def llm_generate(system: str, prompt: str, model: Optional[str] = None) ->
     """Generate a complete LLM response (non-streaming)."""
     if not openai_client:
         raise HTTPException(
-    status_code=503,
-    detail="Ollama is not running or not configured."
-)
+            status_code=503,
+            detail="Ollama is not running or not configured.",
+        )
+
     english_system = (
         "You are a clear, helpful study assistant. Always answer in standard English only. "
         "Keep your response concise, well-structured, and easy for students to understand."
     )
-    resp = await openai_client.chat.completions.create(
-       model=model or OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": english_system + " " + system},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    return resp.choices[0].message.content or ""
+
+    try:
+        resp = await openai_client.chat.completions.create(
+            model=model or OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": english_system + " " + system},
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except (TimeoutError, ConnectionError) as exc:
+        logger.exception("AI completion timed out or failed to connect")
+        raise HTTPException(status_code=503, detail="The AI model is temporarily unavailable. Please try again later.") from exc
+    except Exception as exc:
+        logger.exception("AI completion request failed")
+        raise HTTPException(status_code=503, detail="The AI model request failed. Please try again later.") from exc
+
+    content = resp.choices[0].message.content if getattr(resp, "choices", None) else ""
+    cleaned = (content or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=502, detail="The AI model returned an empty response.")
+    return cleaned
 
 
 async def llm_stream(system: str, prompt: str, model: Optional[str] = None):
@@ -450,19 +1319,42 @@ async def llm_stream(system: str, prompt: str, model: Optional[str] = None):
         "Keep your response concise, well-structured, and easy for students to understand."
     )
 
-    stream = await openai_client.chat.completions.create(
-        model=model or OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": english_system + " " + system},
-            {"role": "user", "content": prompt},
-        ],
-        stream=True,
-    )
+    try:
+        stream = await openai_client.chat.completions.create(
+            model=model or OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": english_system + " " + system},
+                {"role": "user", "content": prompt},
+            ],
+            stream=True,
+        )
+    except (TimeoutError, ConnectionError) as exc:
+        logger.exception("AI stream timed out or failed to connect")
+        yield f"data: {json.dumps({'error': 'The AI model is temporarily unavailable. Please try again later.'})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        return
+    except Exception as exc:
+        logger.exception("AI stream request failed")
+        yield f"data: {json.dumps({'error': 'The AI model request failed. Please try again later.'})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        return
 
-    async for chunk in stream:
-        delta = chunk.choices[0].delta.content if chunk.choices else None
-        if delta:
-            yield delta
+    yielded_any = False
+    try:
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                yielded_any = True
+                yield delta
+    except Exception as exc:
+        logger.exception("AI stream iteration failed")
+        yield f"data: {json.dumps({'error': 'The AI model stream ended unexpectedly. Please try again.'})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        return
+
+    if not yielded_any:
+        yield "I couldn’t find enough relevant information in the uploaded document to answer that question confidently."
+
 # Auth utilities
 JWT_ALGORITHM = "HS256"
 
@@ -599,6 +1491,97 @@ class NoteRequest(BaseModel):
     color: str = "butter"
     is_pinned: bool = False
     document_id: Optional[str] = None
+
+
+class QuestionLibraryQuestionRequest(BaseModel):
+    question: str
+    type: str = "multiple_choice"
+    options: Optional[List[str]] = None
+    correct_answer: Optional[str] = None
+    answer: Optional[str] = None
+    explanation: str = ""
+
+
+class QuestionLibrarySetRequest(BaseModel):
+    name: str
+    subject: str = ""
+    topic: str = ""
+    difficulty: str = "medium"
+    question_type: str = "multiple_choice"
+    questions: List[QuestionLibraryQuestionRequest]
+
+
+def normalize_question_library_question(raw: Any) -> Dict[str, Any]:
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump()
+    elif hasattr(raw, "dict"):
+        raw = raw.dict()
+
+    if not isinstance(raw, dict):
+        raise ValueError("Each question must be an object.")
+
+    q_type = str(raw.get("type", "multiple_choice")).strip().lower() or "multiple_choice"
+    if q_type not in {"multiple_choice", "true_false", "short_answer"}:
+        raise ValueError(f"Unsupported question type '{raw.get('type')}'.")
+
+    question_text = str(raw.get("question", "")).strip()
+    if not question_text:
+        raise ValueError("Each question must include a non-empty 'question' value.")
+
+    explanation = str(raw.get("explanation", "") or "").strip()
+
+    if q_type == "multiple_choice":
+        options = raw.get("options")
+        if not isinstance(options, list) or len(options) < 2:
+            raise ValueError("Multiple choice questions require at least 2 options.")
+
+        cleaned_options = [str(option).strip() for option in options if str(option).strip()]
+        if len(cleaned_options) < 2:
+            raise ValueError("Multiple choice questions require valid answer options.")
+
+        correct_answer = str(raw.get("correct_answer", "") or "").strip()
+        if not correct_answer:
+            raise ValueError("Multiple choice questions require a correct answer.")
+
+        if correct_answer.upper() in {"A", "B", "C", "D"}:
+            option_index = ord(correct_answer.upper()) - ord("A")
+            if option_index >= len(cleaned_options):
+                raise ValueError("The correct answer label does not match the provided options.")
+            normalized_correct_answer = correct_answer.upper()
+        elif correct_answer in cleaned_options:
+            normalized_correct_answer = correct_answer
+        else:
+            raise ValueError("The correct answer must match one of the provided options.")
+
+        return {
+            "type": "multiple_choice",
+            "question": question_text,
+            "options": cleaned_options,
+            "correct_answer": normalized_correct_answer,
+            "explanation": explanation,
+        }
+
+    if q_type == "true_false":
+        correct_answer = str(raw.get("correct_answer", raw.get("answer", "")) or "").strip().lower()
+        if correct_answer not in {"true", "false", "a", "b"}:
+            raise ValueError("True/false questions require a valid true/false answer.")
+        return {
+            "type": "true_false",
+            "question": question_text,
+            "options": ["True", "False"],
+            "correct_answer": "A" if correct_answer in {"true", "a"} else "B",
+            "explanation": explanation,
+        }
+
+    answer = str(raw.get("answer", raw.get("correct_answer", "")) or "").strip()
+    if not answer:
+        raise ValueError("Short answer questions require an answer.")
+    return {
+        "type": "short_answer",
+        "question": question_text,
+        "answer": answer,
+        "explanation": explanation,
+    }
 
 
 # Helper: Extract text from files
@@ -985,16 +1968,34 @@ async def generate_summary(req: SummaryRequest, request: Request):
         raise HTTPException(status_code=400, detail="No text content found in document")
     
     prompt_templates = {
-        "short": f"Provide a concise summary (3-5 sentences) of the following study material:\n\n{text[:4000]}",
-        "detailed": f"Create a comprehensive summary with:\n1. Main Topics\n2. Key Concepts\n3. Important Definitions\n4. Formulas (if any)\n5. Exam Tips\n\nMaterial:\n{text[:6000]}",
-        "bullet_points": f"Summarize in clear bullet points:\n\n{text[:5000]}",
-        "timeline": f"If applicable, create a timeline of events. Otherwise, organize by sequence:\n\n{text[:5000]}"
+        "short": (
+            "Summarize the source material in 3-5 sentences using only information explicitly stated in the document. "
+            "Do not invent facts, dates, examples, formulas, definitions, or names that are not present in the text. "
+            "If a point is unclear or missing, say so briefly rather than guessing.\n\n"
+            f"Source text:\n{text[:4000]}"
+        ),
+        "detailed": (
+            "Create a detailed but accurate summary based only on the source material. Include: "
+            "1. Main topics 2. Key concepts 3. Important definitions 4. Formulas or processes if stated 5. Exam-relevant takeaways. "
+            "Do not add unsupported claims or assumptions. If important information is missing from the source, say that clearly.\n\n"
+            f"Source text:\n{text[:6000]}"
+        ),
+        "bullet_points": (
+            "Summarize the material in clear bullet points using only content explicitly present in the document. "
+            "Do not infer missing facts. Group ideas logically and keep the wording precise.\n\n"
+            f"Source text:\n{text[:5000]}"
+        ),
+        "timeline": (
+            "If the source includes a sequence of events, create a timeline. Otherwise, organize the material by chronological or logical order "
+            "without adding facts not present in the text.\n\n"
+            f"Source text:\n{text[:5000]}"
+        ),
     }
-    
+
     prompt = prompt_templates.get(req.summary_type, prompt_templates["detailed"])
-    
+
     summary_content = await llm_generate(
-        system="You are an expert study assistant. Create clear, well-organized summaries for students.",
+        system="You are an expert study assistant. Summarize only what is supported by the source material, and say when the document does not provide enough information.",
         prompt=prompt,
     )
     
@@ -1028,17 +2029,28 @@ async def ai_tutor(req: TutorRequest, request: Request):
         "exam_prep": "Focus on exam-relevant information, common pitfalls, and test strategies."
     }
     
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No text content found in document")
+
     system_msg = (
         "You are an English-speaking study tutor. Reply in standard English only. "
         "Use clear explanations, simple vocabulary, and concise structure. "
         f"{mode_prompts.get(req.difficulty_mode, mode_prompts['intermediate'])} "
         "Guide students with hints before giving direct answers. "
+        "Answer only from the uploaded document text when it is relevant. If the document does not contain enough information, say so briefly and do not invent details. "
         f"Reference this material: {text}"
     )
-    
+
     async def event_generator():
-        async for delta in llm_stream(system=system_msg, prompt=req.question):
-            yield f"data: {json.dumps({'content': delta})}\n\n"
+        try:
+            async for delta in llm_stream(system=system_msg, prompt=req.question):
+                if isinstance(delta, str) and delta.startswith("data: "):
+                    yield delta
+                else:
+                    yield f"data: {json.dumps({'content': delta})}\n\n"
+        except Exception as exc:
+            logger.exception("Tutor streaming failed")
+            yield f"data: {json.dumps({'error': 'The tutor could not answer this question right now. Please try again.'})}\n\n"
         yield f"data: {json.dumps({'done': True})}\n\n"
     
     return StreamingResponse(
@@ -1071,6 +2083,13 @@ async def generate_quiz(req: QuizRequest, request: Request):
 Question types: {question_types_str}
 Difficulty: {req.difficulty}
 
+Rules:
+- Use only the source material provided.
+- Do not invent facts, authors, dates, or examples that do not appear in the text.
+- Return valid JSON only.
+- Each question must include: type, question, options (for multiple choice), correct_answer, explanation.
+- For multiple choice, use exactly 4 options and a valid correct answer label such as "A".
+
 Material:
 {combined_text}
 
@@ -1088,20 +2107,17 @@ Return ONLY valid JSON in this exact shape:
 }}"""
 
     quiz_content = await llm_generate(
-        system="You are a fast quiz generator. Return valid JSON only, with no markdown fences and no extra commentary. Keep questions short, clear, and focused on the most important ideas.",
+        system="You are a fast quiz generator. Return valid JSON only, with no markdown fences and no extra commentary. Keep questions short, clear, and focused on the most important ideas from the provided material.",
         prompt=prompt,
     )
-    
+
     try:
-        if "```json" in quiz_content:
-            quiz_content = quiz_content.split("```json")[1].split("```")[0].strip()
-        elif "```" in quiz_content:
-            quiz_content = quiz_content.split("```")[1].split("```")[0].strip()
-        
-        quiz_data = json.loads(quiz_content)
-    except Exception:
-        quiz_data = {"questions": [], "error": "Failed to parse quiz"}
-    
+        cleaned_quiz = strip_markdown_fences(quiz_content)
+        quiz_data = json.loads(cleaned_quiz)
+        quiz_data = validate_quiz_payload(quiz_data)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail=f"The AI returned invalid quiz JSON: {exc}") from exc
+
     quiz_id = str(uuid.uuid4())
     quiz_doc = {
         "id": quiz_id,
@@ -1111,9 +2127,192 @@ Return ONLY valid JSON in this exact shape:
         "difficulty": req.difficulty,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.quizzes.insert_one(quiz_doc)
     return normalize_supabase_id(quiz_doc) or dict(quiz_doc)
+
+def _is_question_library_table_missing(err: Exception) -> bool:
+    text = str(err).lower()
+    return "could not find the table" in text or "pgrst205" in text or "does not exist" in text
+
+
+def _get_question_library_sets_for_user(user_id: str) -> List[Dict[str, Any]]:
+    rows = MEMORY_STORE.get("question_sets", [])
+    return [normalize_supabase_id(dict(row)) or dict(row) for row in rows if str((row or {}).get("user_id")) == str(user_id)]
+
+
+def _get_question_library_questions_for_user(user_id: str, set_id: str) -> List[Dict[str, Any]]:
+    rows = MEMORY_STORE.get("question_set_questions", [])
+    return [normalize_supabase_id(dict(row)) or dict(row) for row in rows if str((row or {}).get("user_id")) == str(user_id) and str((row or {}).get("question_set_id")) == str(set_id)]
+
+
+# Practice Question Library (minimal, user-scoped)
+@api_router.post("/question-library/sets")
+async def create_question_set(req: QuestionLibrarySetRequest, request: Request):
+    user = await get_current_user(request)
+
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Question set name is required.")
+    if not req.questions:
+        raise HTTPException(status_code=400, detail="Question set must include at least one question.")
+
+    try:
+        validated_questions = [normalize_question_library_question(question) for question in req.questions]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    set_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    set_doc = {
+        "id": set_id,
+        "user_id": user["id"],
+        "name": name,
+        "subject": (req.subject or "").strip(),
+        "topic": (req.topic or "").strip(),
+        "difficulty": (req.difficulty or "medium").strip() or "medium",
+        "question_type": (req.question_type or "multiple_choice").strip() or "multiple_choice",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    try:
+        await db.question_sets.insert_one(set_doc)
+    except Exception as exc:
+        if not _is_question_library_table_missing(exc):
+            raise
+        MEMORY_STORE.setdefault("question_sets", []).append(dict(set_doc))
+
+    stored_questions = []
+    for question in validated_questions:
+        question_item = {
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "question_set_id": set_id,
+            "question": question["question"],
+            "type": question["type"],
+            "options": question.get("options", []),
+            "correct_answer": question.get("correct_answer", question.get("answer", "")),
+            "answer": question.get("answer", ""),
+            "explanation": question.get("explanation", ""),
+            "created_at": now,
+        }
+        try:
+            await db.question_set_questions.insert_one(question_item)
+        except Exception as exc:
+            if not _is_question_library_table_missing(exc):
+                raise
+            MEMORY_STORE.setdefault("question_set_questions", []).append(dict(question_item))
+        stored_questions.append(normalize_supabase_id(question_item) or dict(question_item))
+
+    response = normalize_supabase_id(set_doc) or dict(set_doc)
+    response["questions"] = stored_questions
+    return response
+
+
+@api_router.get("/question-library/sets")
+async def list_question_sets(request: Request):
+    user = await get_current_user(request)
+
+    try:
+        sets = await db.question_sets.find({"user_id": user["id"]}).sort([("updated_at", -1)]).to_list(1000)
+    except Exception as exc:
+        if not _is_question_library_table_missing(exc):
+            raise
+        sets = _get_question_library_sets_for_user(user["id"])
+
+    results = []
+    for set_doc in sets:
+        normalized_set = normalize_supabase_id(set_doc) or dict(set_doc)
+        normalized_set.pop("_id", None)
+        try:
+            question_items = await db.question_set_questions.find({
+                "user_id": user["id"],
+                "question_set_id": normalized_set["id"],
+            }).to_list(1000)
+        except Exception as exc:
+            if not _is_question_library_table_missing(exc):
+                raise
+            question_items = _get_question_library_questions_for_user(user["id"], normalized_set["id"])
+        normalized_set["questions"] = [
+            normalize_supabase_id(item) or dict(item) for item in question_items
+        ]
+        results.append(normalized_set)
+    return results
+
+
+@api_router.post("/admin/library/import-default")
+async def import_default_library_catalog_admin(request: Request):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    report = import_default_library_catalog(db=db)
+    if report.get("failed") and any(report["failed"].values()):
+        raise HTTPException(status_code=500, detail={"message": "Library import completed with failures", "report": report})
+    return report
+
+
+@api_router.get("/library/qualifications")
+async def list_library_qualifications(request: Request):
+    await get_current_user(request)
+    catalog = _get_published_library_catalog()
+    return catalog.get("qualifications", [])
+
+
+@api_router.get("/library/qualifications/{qualification_slug}")
+async def get_library_qualification(qualification_slug: str, request: Request):
+    await get_current_user(request)
+    catalog = _get_published_library_catalog()
+    qualification = _find_library_qualification(catalog.get("qualifications", []), qualification_slug)
+    if not qualification:
+        raise HTTPException(status_code=404, detail="Qualification not found")
+    return qualification
+
+
+@api_router.get("/library/qualifications/{qualification_slug}/subjects")
+async def list_library_subjects(qualification_slug: str, request: Request):
+    await get_current_user(request)
+    catalog = _get_published_library_catalog()
+    qualification = _find_library_qualification(catalog.get("qualifications", []), qualification_slug)
+    if not qualification:
+        raise HTTPException(status_code=404, detail="Qualification not found")
+    return qualification.get("subjects", [])
+
+
+@api_router.get("/library/qualifications/{qualification_slug}/subjects/{subject_slug}")
+async def get_library_subject(qualification_slug: str, subject_slug: str, request: Request):
+    await get_current_user(request)
+    catalog = _get_published_library_catalog()
+    qualification = _find_library_qualification(catalog.get("qualifications", []), qualification_slug)
+    if not qualification:
+        raise HTTPException(status_code=404, detail="Qualification not found")
+
+    subject = next((item for item in qualification.get("subjects", []) if str(item.get("slug")) == str(subject_slug)), None)
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+    return subject
+
+
+@api_router.get("/library/qualifications/{qualification_slug}/subjects/{subject_slug}/topics/{topic_slug}")
+async def get_library_topic(qualification_slug: str, subject_slug: str, topic_slug: str, request: Request):
+    await get_current_user(request)
+    catalog = _get_published_library_catalog()
+    qualification = _find_library_qualification(catalog.get("qualifications", []), qualification_slug)
+    if not qualification:
+        raise HTTPException(status_code=404, detail="Qualification not found")
+
+    subject = next((item for item in qualification.get("subjects", []) if str(item.get("slug")) == str(subject_slug)), None)
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    topic = next((item for item in subject.get("topics", []) if str(item.get("slug")) == str(topic_slug)), None)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    return {"qualification": qualification, "subject": subject, "topic": topic}
+
 
 # Flashcards
 @api_router.post("/ai/flashcards")
@@ -1378,7 +2577,7 @@ async def update_note(note_id: str, req: NoteRequest, request: Request):
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Note not found")
-    note = await db.notes.find_one({"_id": note_id})
+    note = await db.notes.find_one({"_id": note_id, "user_id": user["id"]})
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     note = ensure_response_id(note) or note
@@ -1431,8 +2630,17 @@ app.add_middleware(
 )
 
 async def seed_admin():
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@studyai.com")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    app_env = (os.environ.get("APP_ENV") or "development").lower()
+    admin_email = os.environ.get("ADMIN_EMAIL")
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+
+    if app_env == "production" and not admin_email and not admin_password:
+        logger.warning("Production mode: skipping default admin account creation because ADMIN_EMAIL and ADMIN_PASSWORD are not configured.")
+        return
+
+    admin_email = admin_email or "admin@studyai.com"
+    admin_password = admin_password or "admin123"
+
     existing = await db.users.find_one({"email": admin_email})
     if existing is None:
         admin_id = str(uuid.uuid4())
@@ -1450,13 +2658,14 @@ async def seed_admin():
     elif not verify_password(admin_password, existing["password_hash"]):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
         logger.info(f"Admin password updated")
-    
-    # Write test credentials to the repository-local memory directory so startup
-    # succeeds on systems where /app is not writable.
-    mem_dir = ROOT_DIR / "memory"
-    mem_dir.mkdir(parents=True, exist_ok=True)
-    with open(mem_dir / "test_credentials.md", "w") as f:
-        f.write(f"""# Test Credentials
+
+    if app_env != "production":
+        # Write test credentials to the repository-local memory directory so startup
+        # succeeds on systems where /app is not writable.
+        mem_dir = ROOT_DIR / "memory"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        with open(mem_dir / "test_credentials.md", "w") as f:
+            f.write(f"""# Test Credentials
 
 ## Admin Account
 - Email: {admin_email}

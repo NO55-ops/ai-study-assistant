@@ -17,6 +17,10 @@ import Quiz from './pages/Quiz';
 import Flashcards from './pages/Flashcards';
 import Notes from './pages/Notes';
 import Settings from './pages/Settings';
+import Library from './pages/Library';
+import LibraryQualification from './pages/LibraryQualification';
+import LibrarySubject from './pages/LibrarySubject';
+import LibraryTopic from './pages/LibraryTopic';
 import './App.css';
 
 const GlobalNotesWidget = () => {
@@ -102,6 +106,42 @@ function App() {
               <ProtectedRoute>
                 <Navbar />
                 <Flashcards />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/library"
+            element={
+              <ProtectedRoute>
+                <Navbar />
+                <Library />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/library/:qualificationSlug"
+            element={
+              <ProtectedRoute>
+                <Navbar />
+                <LibraryQualification />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/library/:qualificationSlug/:subjectSlug"
+            element={
+              <ProtectedRoute>
+                <Navbar />
+                <LibrarySubject />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/library/:qualificationSlug/:subjectSlug/:topicSlug"
+            element={
+              <ProtectedRoute>
+                <Navbar />
+                <LibraryTopic />
               </ProtectedRoute>
             }
           />

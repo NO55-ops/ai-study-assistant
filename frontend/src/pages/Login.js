@@ -1,20 +1,56 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate, Link } from 'react-router-dom';
-import { BookOpen, Mail, Lock, User } from 'lucide-react';
+import { BookOpen, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
 
 const Login = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
   const { login, register } = useAuth();
   const navigate = useNavigate();
 
+  const getPasswordError = (nextPassword, nextConfirmPassword) => {
+    if (!nextPassword || !nextConfirmPassword) {
+      return 'Passwords do not match.';
+    }
+    if (nextPassword !== nextConfirmPassword) {
+      return 'Passwords do not match.';
+    }
+    return '';
+  };
+
+  const handlePasswordChange = (value) => {
+    setPassword(value);
+    if (!isLogin) {
+      setPasswordError(getPasswordError(value, confirmPassword));
+    }
+  };
+
+  const handleConfirmPasswordChange = (value) => {
+    setConfirmPassword(value);
+    if (!isLogin) {
+      setPasswordError(getPasswordError(password, value));
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!isLogin) {
+      if (!password || !confirmPassword || password !== confirmPassword) {
+        setPasswordError('Passwords do not match.');
+        return;
+      }
+    }
+
     setLoading(true);
 
     let result;
@@ -126,16 +162,59 @@ const Login = () => {
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[#0A0A0A]" />
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="input-field pl-14"
+                  onChange={(e) => handlePasswordChange(e.target.value)}
+                  className="input-field pl-14 pr-12"
                   placeholder="••••••••"
                   required
+                  autoComplete="new-password"
                   data-testid="password-input"
                 />
+                <button
+                  type="button"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#0A0A0A] hover:opacity-80"
+                >
+                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
               </div>
             </div>
+
+            {!isLogin && (
+              <div>
+                <label className="block text-sm font-semibold text-[#0A0A0A] mb-2" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  Confirm password
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[#0A0A0A]" />
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(e) => handleConfirmPasswordChange(e.target.value)}
+                    className="input-field pl-14 pr-12"
+                    placeholder="••••••••"
+                    required={!isLogin}
+                    autoComplete="new-password"
+                    data-testid="register-password-confirm-input"
+                  />
+                  <button
+                    type="button"
+                    aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                    onClick={() => setShowConfirmPassword((prev) => !prev)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#0A0A0A] hover:opacity-80"
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+                {passwordError && (
+                  <p className="mt-2 text-sm font-medium text-red-600" role="alert">
+                    {passwordError}
+                  </p>
+                )}
+              </div>
+            )}
 
             <button
               type="submit"

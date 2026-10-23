@@ -18,6 +18,7 @@ const Navbar = () => {
   const navItems = [
     { path: '/dashboard', label: 'Dashboard', description: 'View your study progress and overview.', icon: Home },
     { path: '/documents', label: 'Documents', description: 'Upload and manage your study materials.', icon: FileText },
+    { path: '/library', label: 'Library', description: 'Browse a curated collection of study content.', icon: BookOpen },
     { path: '/notes', label: 'Notes', description: 'Create and review study notes.', icon: NotebookPen },
     { path: '/tutor', label: 'AI Tutor', description: 'Ask questions and get help studying.', icon: Brain },
     { path: '/quiz', label: 'Quiz', description: 'Generate and take practice quizzes.', icon: HelpCircle },
