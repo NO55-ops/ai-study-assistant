@@ -961,22 +961,22 @@ def get_published_library_catalog(db: Optional[Any] = None) -> Dict[str, Any]:
                     for topic_row in _db_table_rows(active_db, "library_topics"):
                         topic_record = dict(topic_row)
                         if str(topic_record.get("subject_slug") or topic_record.get("subject_id")) == subject_slug:
+                            topic_slug = str(topic_record.get("slug") or topic_record.get("id") or "")
+                            if not topic_slug:
+                                continue
                             resource_rows = []
                             for resource_row in _db_table_rows(active_db, "library_resources"):
                                 resource_record = dict(resource_row)
-                                if str(resource_record.get("topic_slug") or resource_record.get("topic_id")) == str(topic_record.get("slug") or topic_record.get("id") or ""):
+                                if str(resource_record.get("topic_slug") or resource_record.get("topic_id")) == topic_slug:
                                     resource_rows.append({
+                                        "slug": str(resource_record.get("slug") or resource_record.get("id") or topic_slug),
                                         "resource_type": resource_record.get("resource_type", "notes"),
                                         "title": resource_record.get("title", "Untitled"),
                                         "status": resource_record.get("status", "published"),
                                         "payload": resource_record.get("payload", {}),
                                     })
-                            topics.append({
-                                "slug": str(topic_record.get("slug") or topic_record.get("id") or ""),
-                                "title": topic_record.get("title", "Untitled"),
-                                "status": topic_record.get("status", "published"),
-                                "resources": resource_rows,
-                            })
+                            flattened_topic = _flatten_library_topic_response(topic_record, resource_rows)
+                            topics.append(flattened_topic)
                     subject_rows.append({
                         "slug": subject_slug,
                         "name": subject_record.get("name", subject_slug),
@@ -1000,8 +1000,118 @@ def get_published_library_catalog(db: Optional[Any] = None) -> Dict[str, Any]:
     return {"qualifications": []}
 
 
+def _flatten_library_topic_response(topic_record: Optional[Dict[str, Any]], resource_rows: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    flattened = dict(topic_record or {})
+    resources = []
+    for resource_row in resource_rows or []:
+        resource = dict(resource_row)
+        resources.append({
+            "slug": str(resource.get("slug") or resource.get("id") or "resource"),
+            "resource_type": str(resource.get("resource_type") or resource.get("type") or "summary").lower(),
+            "title": resource.get("title", "Untitled"),
+            "status": str(resource.get("status", "published")).lower(),
+            "payload": resource.get("payload") if isinstance(resource.get("payload"), dict) else {"content": resource.get("payload")},
+        })
+
+    flattened["resources"] = resources
+
+    for resource in resources:
+        resource_type = str(resource["resource_type"]).lower()
+        payload = resource.get("payload") if isinstance(resource.get("payload"), dict) else {}
+        if resource_type == "summary":
+            if isinstance(payload.get("content"), str):
+                flattened["summary"] = payload["content"]
+            elif isinstance(payload.get("summary"), str):
+                flattened["summary"] = payload["summary"]
+        elif resource_type == "notes":
+            if isinstance(payload.get("notes"), list):
+                flattened["notes"] = payload["notes"]
+            elif isinstance(payload.get("content"), list):
+                flattened["notes"] = payload["content"]
+        elif resource_type == "formulae":
+            if isinstance(payload.get("formulae"), list):
+                flattened["formulae"] = payload["formulae"]
+            elif isinstance(payload.get("content"), list):
+                flattened["formulae"] = payload["content"]
+        elif resource_type == "worked_examples":
+            if isinstance(payload.get("worked_examples"), list):
+                flattened["worked_examples"] = payload["worked_examples"]
+        elif resource_type == "exam_tips":
+            if isinstance(payload.get("exam_tips"), list):
+                flattened["exam_tips"] = payload["exam_tips"]
+        elif resource_type == "common_mistakes":
+            if isinstance(payload.get("common_mistakes"), list):
+                flattened["common_mistakes"] = payload["common_mistakes"]
+        elif resource_type == "flashcards":
+            if isinstance(payload.get("flashcards"), list):
+                flattened["flashcards"] = payload["flashcards"]
+        elif resource_type == "practice_questions":
+            if isinstance(payload.get("practice_questions"), list):
+                flattened["practice_questions"] = payload["practice_questions"]
+
+    if "summary" not in flattened:
+        summary_items = [resource for resource in resources if str(resource["resource_type"]).lower() == "summary"]
+        if summary_items:
+            payload = summary_items[0].get("payload") or {}
+            if isinstance(payload.get("content"), str):
+                flattened["summary"] = payload["content"]
+
+    return flattened
+
+
 def _get_published_library_catalog() -> Dict[str, Any]:
     return get_published_library_catalog()
+
+
+def _get_admin_library_catalog() -> Dict[str, Any]:
+    active_db = globals().get("db")
+    if active_db is None or not _db_has_library_catalog(active_db):
+        raise RuntimeError("Library catalog database is not configured.")
+
+    qualifications = []
+    for qualification_row in _db_table_rows(active_db, "library_qualifications"):
+        qualification = dict(qualification_row)
+        qualification_slug = str(qualification.get("slug") or qualification.get("id") or "")
+        if not qualification_slug:
+            continue
+
+        subject_rows = []
+        for subject_row in _db_table_rows(active_db, "library_subjects"):
+            subject = dict(subject_row)
+            if str(subject.get("qualification_slug") or subject.get("qualification_id")) != qualification_slug:
+                continue
+
+            subject_slug = str(subject.get("slug") or subject.get("id") or "")
+            if not subject_slug:
+                continue
+
+            topic_rows = []
+            for topic_row in _db_table_rows(active_db, "library_topics"):
+                topic = dict(topic_row)
+                if str(topic.get("subject_slug") or topic.get("subject_id")) != subject_slug:
+                    continue
+                topic_slug = str(topic.get("slug") or topic.get("id") or "")
+                if not topic_slug:
+                    continue
+                resource_rows = []
+                for resource_row in _db_table_rows(active_db, "library_resources"):
+                    resource = dict(resource_row)
+                    if str(resource.get("topic_slug") or resource.get("topic_id")) == topic_slug:
+                        resource_rows.append(resource)
+                topic_with_resources = _flatten_library_topic_response(topic, resource_rows)
+                topic_rows.append(topic_with_resources)
+
+            subject_rows.append({
+                **subject,
+                "topics": topic_rows,
+            })
+
+        qualifications.append({
+            **qualification,
+            "subjects": subject_rows,
+        })
+
+    return {"qualifications": qualifications}
 
 
 def _filter_published_library_item(item: Any) -> Any:
@@ -2363,6 +2473,14 @@ async def list_question_sets(request: Request):
     return results
 
 
+@api_router.get("/admin/library/catalog")
+async def get_admin_library_catalog(request: Request):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return _get_admin_library_catalog()
+
+
 @api_router.post("/admin/library/import-default")
 async def import_default_library_catalog_admin(request: Request):
     user = await get_current_user(request)
@@ -2373,6 +2491,140 @@ async def import_default_library_catalog_admin(request: Request):
     if report.get("failed") and any(report["failed"].values()):
         raise HTTPException(status_code=500, detail={"message": "Library import completed with failures", "report": report})
     return report
+
+
+@api_router.post("/admin/library/qualifications")
+async def create_library_qualification(request: Request, payload: Dict[str, Any]):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Qualification payload must be an object.")
+    slug = str(payload.get("slug") or payload.get("name") or "").strip()
+    if not slug:
+        raise HTTPException(status_code=400, detail="Qualification slug is required.")
+    qualification = {"slug": slug, "name": payload.get("name") or slug, "status": str(payload.get("status", "draft")).lower()}
+    existing = await db.library_qualifications.find_one({"slug": slug})
+    if existing:
+        await db.library_qualifications.update_one({"slug": slug}, {"$set": qualification})
+        return {"status": "updated", "data": qualification}
+    await db.library_qualifications.insert_one(qualification)
+    return {"status": "created", "data": qualification}
+
+
+@api_router.put("/admin/library/qualifications/{slug}")
+async def update_library_qualification(slug: str, request: Request, payload: Dict[str, Any]):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Qualification payload must be an object.")
+    updated = {"slug": slug, "name": payload.get("name") or slug, "status": str(payload.get("status", "draft")).lower()}
+    await db.library_qualifications.update_one({"slug": slug}, {"$set": updated})
+    return {"status": "updated", "data": updated}
+
+
+@api_router.delete("/admin/library/qualifications/{slug}")
+async def delete_library_qualification(slug: str, request: Request):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    await db.library_qualifications.delete_one({"slug": slug})
+    return {"status": "deleted", "slug": slug}
+
+
+@api_router.post("/admin/library/subjects")
+async def create_library_subject(request: Request, payload: Dict[str, Any]):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Subject payload must be an object.")
+    qualification_slug = str(payload.get("qualification_slug") or "").strip()
+    slug = str(payload.get("slug") or payload.get("name") or "").strip()
+    if not qualification_slug or not slug:
+        raise HTTPException(status_code=400, detail="qualification_slug and slug are required.")
+    subject = {"slug": slug, "qualification_slug": qualification_slug, "name": payload.get("name") or slug, "status": str(payload.get("status", "draft")).lower()}
+    existing = await db.library_subjects.find_one({"slug": slug, "qualification_slug": qualification_slug})
+    if existing:
+        await db.library_subjects.update_one({"slug": slug, "qualification_slug": qualification_slug}, {"$set": subject})
+        return {"status": "updated", "data": subject}
+    await db.library_subjects.insert_one(subject)
+    return {"status": "created", "data": subject}
+
+
+@api_router.post("/admin/library/topics")
+async def create_library_topic(request: Request, payload: Dict[str, Any]):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Topic payload must be an object.")
+    subject_slug = str(payload.get("subject_slug") or "").strip()
+    slug = str(payload.get("slug") or payload.get("title") or "").strip()
+    if not subject_slug or not slug:
+        raise HTTPException(status_code=400, detail="subject_slug and slug are required.")
+    topic = {"slug": slug, "subject_slug": subject_slug, "title": payload.get("title") or slug, "status": str(payload.get("status", "draft")).lower()}
+    existing = await db.library_topics.find_one({"slug": slug, "subject_slug": subject_slug})
+    if existing:
+        await db.library_topics.update_one({"slug": slug, "subject_slug": subject_slug}, {"$set": topic})
+        return {"status": "updated", "data": topic}
+    await db.library_topics.insert_one(topic)
+    return {"status": "created", "data": topic}
+
+
+@api_router.delete("/admin/library/subjects/{slug}")
+async def delete_library_subject(slug: str, request: Request):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    await db.library_subjects.delete_one({"slug": slug})
+    return {"status": "deleted", "slug": slug}
+
+
+@api_router.delete("/admin/library/topics/{slug}")
+async def delete_library_topic(slug: str, request: Request):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    await db.library_topics.delete_one({"slug": slug})
+    return {"status": "deleted", "slug": slug}
+
+
+@api_router.post("/admin/library/resources")
+async def create_library_resource(request: Request, payload: Dict[str, Any]):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Resource payload must be an object.")
+    topic_slug = str(payload.get("topic_slug") or "").strip()
+    slug = str(payload.get("slug") or payload.get("title") or "").strip()
+    if not topic_slug or not slug:
+        raise HTTPException(status_code=400, detail="topic_slug and slug are required.")
+    resource = {
+        "slug": slug,
+        "topic_slug": topic_slug,
+        "resource_type": str(payload.get("resource_type") or "summary").lower(),
+        "title": payload.get("title") or slug,
+        "status": str(payload.get("status", "draft")).lower(),
+        "payload": payload.get("payload") if isinstance(payload.get("payload"), dict) else {"content": payload.get("payload")},
+    }
+    existing = await db.library_resources.find_one({"slug": slug, "topic_slug": topic_slug})
+    if existing:
+        await db.library_resources.update_one({"slug": slug, "topic_slug": topic_slug}, {"$set": resource})
+        return {"status": "updated", "data": resource}
+    await db.library_resources.insert_one(resource)
+    return {"status": "created", "data": resource}
+
+
+@api_router.delete("/admin/library/resources/{slug}")
+async def delete_library_resource(slug: str, request: Request):
+    user = await get_current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    await db.library_resources.delete_one({"slug": slug})
+    return {"status": "deleted", "slug": slug}
 
 
 @api_router.get("/library/qualifications")

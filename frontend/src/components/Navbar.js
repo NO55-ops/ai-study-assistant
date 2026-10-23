@@ -26,6 +26,12 @@ const Navbar = () => {
     { path: '/settings', label: 'Settings', description: 'Manage your account and preferences.', icon: Settings },
   ];
 
+  const adminNavItems = user && String(user.role || '').toLowerCase() === 'admin'
+    ? [{ path: '/admin/library-editor', label: 'Admin Library', description: 'Manage shared Library content.', icon: BookOpen }]
+    : [];
+
+  const visibleNavItems = [...navItems, ...adminNavItems];
+
   return (
     <>
       <nav
@@ -55,7 +61,7 @@ const Navbar = () => {
           </Link>
 
           <div className="mt-3 flex w-full flex-col items-center gap-3 overflow-visible">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const Icon = item.icon;
               const isActive = location.pathname === item.path;
               const tooltipText = `${item.label} — ${item.description}`;
@@ -183,7 +189,7 @@ const Navbar = () => {
               style={{ borderColor: 'var(--border-main)' }}
               data-testid="mobile-menu"
             >
-              {navItems.map((item) => {
+              {visibleNavItems.map((item) => {
                 const Icon = item.icon;
                 const isActive = location.pathname === item.path;
                 return (

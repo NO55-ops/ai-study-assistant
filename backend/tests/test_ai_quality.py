@@ -524,3 +524,33 @@ def test_library_catalog_raises_clear_error_on_query_failure(monkeypatch):
         raise AssertionError("Expected a database query failure to surface as a clear RuntimeError")
     except RuntimeError as exc:
         assert "query failed" in str(exc).lower()
+
+
+def test_library_topic_payload_flattens_resource_content():
+    class FakeDb:
+        rows = {
+            "library_qualifications": [{"slug": "cambridge-igcse", "name": "Cambridge IGCSE", "status": "published"}],
+            "library_subjects": [{"slug": "international-mathematics-0607-extended", "qualification_slug": "cambridge-igcse", "name": "International Mathematics 0607 Extended", "status": "published"}],
+            "library_topics": [{"slug": "quadratic-equations", "subject_slug": "international-mathematics-0607-extended", "title": "Quadratic Equations", "status": "published"}],
+            "library_resources": [
+                {"slug": "quadratic-equations-summary", "topic_slug": "quadratic-equations", "resource_type": "summary", "title": "Quadratic Equations summary", "status": "published", "payload": {"content": "Factorise or use the formula."}},
+                {"slug": "quadratic-equations-notes", "topic_slug": "quadratic-equations", "resource_type": "notes", "title": "Notes", "status": "published", "payload": {"notes": [{"heading": "Definition and standard form", "content": ["A quadratic equation is any equation that can be written in the form ax^2 + bx + c = 0."]}]}} ,
+            ],
+        }
+
+    catalog = backend_server.get_published_library_catalog(db=FakeDb())
+    topic = catalog["qualifications"][0]["subjects"][0]["topics"][0]
+    assert "notes" in topic
+    assert topic["notes"][0]["heading"] == "Definition and standard form"
+    assert "summary" in topic or topic["resources"][0]["title"] == "Quadratic Equations summary"
+
+
+def test_admin_library_catalog_requires_admin(monkeypatch):
+    backend_server.MEMORY_STORE.clear()
+    monkeypatch.setattr(backend_server, "get_current_user", AsyncMock(return_value={"id": "user-1", "role": "student"}))
+
+    try:
+        asyncio.run(backend_server.get_admin_library_catalog(request=None))
+        raise AssertionError("Expected admin-only access to be rejected")
+    except backend_server.HTTPException as exc:
+        assert exc.status_code == 403

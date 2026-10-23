@@ -73,6 +73,15 @@ export const libraryService = {
   listSubjects: (qualificationSlug) => api.get(`/library/qualifications/${qualificationSlug}/subjects`),
   getSubject: (qualificationSlug, subjectSlug) => api.get(`/library/qualifications/${qualificationSlug}/subjects/${subjectSlug}`),
   getTopic: (qualificationSlug, subjectSlug, topicSlug) => api.get(`/library/qualifications/${qualificationSlug}/subjects/${subjectSlug}/topics/${topicSlug}`),
+  getAdminCatalog: () => api.get('/admin/library/catalog'),
+  saveQualification: (payload) => api.post('/admin/library/qualifications', payload),
+  saveSubject: (payload) => api.post('/admin/library/subjects', payload),
+  saveTopic: (payload) => api.post('/admin/library/topics', payload),
+  saveResource: (payload) => api.post('/admin/library/resources', payload),
+  deleteQualification: (slug) => api.delete(`/admin/library/qualifications/${slug}`),
+  deleteSubject: (slug) => api.delete(`/admin/library/subjects/${slug}`),
+  deleteTopic: (slug) => api.delete(`/admin/library/topics/${slug}`),
+  deleteResource: (slug) => api.delete(`/admin/library/resources/${slug}`),
 };
 
 export const notesService = {

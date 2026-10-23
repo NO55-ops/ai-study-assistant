@@ -21,6 +21,7 @@ import Library from './pages/Library';
 import LibraryQualification from './pages/LibraryQualification';
 import LibrarySubject from './pages/LibrarySubject';
 import LibraryTopic from './pages/LibraryTopic';
+import LibraryAdminEditor from './pages/LibraryAdminEditor';
 import './App.css';
 
 const GlobalNotesWidget = () => {
@@ -142,6 +143,15 @@ function App() {
               <ProtectedRoute>
                 <Navbar />
                 <LibraryTopic />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/library-editor"
+            element={
+              <ProtectedRoute>
+                <Navbar />
+                <LibraryAdminEditor />
               </ProtectedRoute>
             }
           />
