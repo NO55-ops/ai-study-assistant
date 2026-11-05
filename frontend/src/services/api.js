@@ -44,9 +44,15 @@ export const aiService = {
     ensureQuizShape(resp.data);
     return resp;
   },
+  generateMockExam: (payload) => api.post('/ai/mock-exam', payload),
+  submitMockExam: (payload) => api.post('/mock-exams/submit', payload),
   generateFlashcards: (documentId) => api.post('/ai/flashcards', { document_id: documentId }),
-  generateStudyPlan: (examDates, dailyStudyTime) =>
-    api.post('/ai/study-plan', { exam_dates: examDates, daily_study_time: dailyStudyTime }),
+  generateStudyPlan: (payloadOrExamDates, dailyStudyTime) => {
+    const payload = Array.isArray(payloadOrExamDates)
+      ? { exam_dates: payloadOrExamDates, daily_study_time: dailyStudyTime ?? 60 }
+      : (payloadOrExamDates || {});
+    return api.post('/ai/study-plan', payload);
+  },
 };
 
 export const progressService = {
@@ -60,6 +66,18 @@ export const progressService = {
 export const dashboardService = {
   get: () => api.get('/dashboard'),
   getCurrentStudyPlan: () => api.get('/study-plan/current'),
+  getAnalytics: () => api.get('/analytics/overview'),
+};
+
+export const knowledgeGraphService = {
+  generate: (documentId, subject = '', topic = '') =>
+    api.post('/knowledge-graph/generate', { document_id: documentId, subject, topic }),
+  list: () => api.get('/knowledge-graph'),
+  get: (mapId) => api.get(`/knowledge-graph/${mapId}`),
+  saveProgress: (mapId, payload) => api.post(`/knowledge-graph/${mapId}/progress`, payload),
+  getProgress: (mapId) => api.get(`/knowledge-graph/${mapId}/progress`),
+  assess: (mapId, conceptId, questionType = 'short') =>
+    api.post(`/knowledge-graph/${mapId}/assessment`, { concept_id: conceptId, question_type: questionType }),
 };
 
 export const flashcardService = {
@@ -68,6 +86,12 @@ export const flashcardService = {
     ensureArray(resp.data, 'flashcards');
     return resp;
   },
+  get: (id) => api.get(`/flashcards/${id}`),
+  create: (payload) => api.post('/flashcards', payload),
+  update: (id, payload) => api.put(`/flashcards/${id}`, payload),
+  remove: (id) => api.delete(`/flashcards/${id}`),
+  addCard: (id, payload) => api.post(`/flashcards/${id}/cards`, payload),
+  removeCard: (id, cardIndex) => api.delete(`/flashcards/${id}/cards/${cardIndex}`),
 };
 
 export const libraryService = {

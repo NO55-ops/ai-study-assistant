@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { BookOpen, Home, FileText, Brain, HelpCircle, Layers, LogOut, Menu, X, Settings, NotebookPen } from 'lucide-react';
+import { BookOpen, Home, FileText, Brain, HelpCircle, Layers, LogOut, Menu, X, Settings, NotebookPen, CalendarRange, GitBranch } from 'lucide-react';
 import { useState } from 'react';
 
 const Navbar = () => {
@@ -17,11 +17,13 @@ const Navbar = () => {
 
   const navItems = [
     { path: '/dashboard', label: 'Dashboard', description: 'View your study progress and overview.', icon: Home },
+    { path: '/planner', label: 'Planner', description: 'Create and manage your study schedule.', icon: CalendarRange },
     { path: '/documents', label: 'Documents', description: 'Upload and manage your study materials.', icon: FileText },
+    { path: '/knowledge-graph', label: 'Concept Map', description: 'Build connected concept maps from your study material.', icon: GitBranch },
     { path: '/library', label: 'Library', description: 'Browse a curated collection of study content.', icon: BookOpen },
     { path: '/notes', label: 'Notes', description: 'Create and review study notes.', icon: NotebookPen },
     { path: '/tutor', label: 'AI Tutor', description: 'Ask questions and get help studying.', icon: Brain },
-    { path: '/quiz', label: 'Quiz', description: 'Generate and take practice quizzes.', icon: HelpCircle },
+    { path: '/quiz', label: 'Mock Exam', description: 'Generate and take timed mock exams.', icon: HelpCircle },
     { path: '/flashcards', label: 'Flashcards', description: 'Review and memorise key concepts.', icon: Layers },
     { path: '/settings', label: 'Settings', description: 'Manage your account and preferences.', icon: Settings },
   ];

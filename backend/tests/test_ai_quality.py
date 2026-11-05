@@ -9,6 +9,16 @@ backend_server = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(backend_server)
 
 
+def test_app_health_and_readiness_are_exposed():
+    health = backend_server.app.routes
+    health_paths = {route.path for route in health}
+    assert "/health" in health_paths
+    assert "/ready" in health_paths
+
+    ready_route = next(route for route in health if route.path == "/ready")
+    assert callable(ready_route.endpoint)
+
+
 def test_strip_markdown_fences_removes_code_blocks():
     raw = '```json\n{"questions": [{"type": "multiple_choice"}]}\n```'
     cleaned = backend_server.strip_markdown_fences(raw)
@@ -119,6 +129,50 @@ def test_create_question_set_accepts_valid_questions(monkeypatch):
     assert result["user_id"] == "user-1"
     assert result["name"] == "Algebra Set"
     assert result["questions"][0]["correct_answer"] == "A"
+
+
+def test_generate_study_plan_creates_structured_schedule(monkeypatch):
+    backend_server.MEMORY_STORE.clear()
+    monkeypatch.setattr(backend_server, "get_current_user", AsyncMock(return_value={"id": "user-1"}))
+    monkeypatch.setattr(backend_server, "llm_generate", AsyncMock(return_value='```json\n{"weeks":[{"week_number":1,"days":[{"day":"Monday","tasks":[{"subject":"Math","topic":"Algebra","duration_minutes":45,"task_type":"revision"}]}]}]}\n```'))
+
+    req = backend_server.StudyPlanRequest(
+        title="Math exam prep",
+        subject="Mathematics",
+        topics=["Algebra", "Geometry"],
+        goal="Score 85%",
+        exam_date="2026-12-15",
+        available_days=["Monday", "Wednesday", "Friday"],
+        daily_study_time=60,
+        weeks_count=2,
+    )
+
+    result = asyncio.run(backend_server.generate_study_plan(req, request=None))
+    assert result["user_id"] == "user-1"
+    assert result["plan_data"]["weeks"][0]["days"][0]["tasks"][0]["subject"] == "Math"
+    assert result["plan_data"]["goal"] == "Score 85%"
+    assert result["plan_data"]["title"] == "Math exam prep"
+
+
+def test_generate_study_plan_falls_back_when_ai_response_is_invalid(monkeypatch):
+    backend_server.MEMORY_STORE.clear()
+    monkeypatch.setattr(backend_server, "get_current_user", AsyncMock(return_value={"id": "user-1"}))
+    monkeypatch.setattr(backend_server, "llm_generate", AsyncMock(return_value='not-json'))
+
+    req = backend_server.StudyPlanRequest(
+        title="Biology plan",
+        subject="Biology",
+        topics=["Cell structure"],
+        goal="Improve recall",
+        exam_date="2026-11-20",
+        available_days=["Tuesday", "Thursday"],
+        daily_study_time=45,
+        weeks_count=1,
+    )
+
+    result = asyncio.run(backend_server.generate_study_plan(req, request=None))
+    assert result["plan_data"]["weeks"][0]["days"][0]["tasks"]
+    assert result["plan_data"]["goal"] == "Improve recall"
 
 
 def test_list_question_sets_only_returns_current_user(monkeypatch):
@@ -506,6 +560,148 @@ def test_default_catalog_import_pipeline_is_repeatable_and_deterministic():
     assert len({resource["slug"] for resource in fake_db.rows["library_resources"]}) == len(fake_db.rows["library_resources"])
 
 
+def test_parse_mark_scheme_extracts_official_points_only():
+    scheme_text = """
+    1 (a) State the function of ATP. [2]
+    Award 1 mark for 'stores/releases energy' and 1 mark for 'used in cellular processes'.
+    Accept 'energy for metabolism' as equivalent to 'stores/releases energy'.
+    1 (b) Explain why the cell membrane is selectively permeable. [3]
+    Award 1 mark for 'lipid bilayer'; 1 mark for 'controls movement of substances'; 1 mark for 'allows small/non-polar molecules to pass'.
+    """
+
+    parsed = backend_server.parse_mark_scheme_text(scheme_text)
+    assert parsed["questions"][0]["marks_total"] == 2
+    assert any("stores/releases energy" in point.lower() for point in parsed["questions"][0]["marking_points"])
+    assert parsed["questions"][0]["accepted_alternatives"]
+    assert parsed["unreliable"] == []
+
+
+def test_mark_exam_answer_awards_partial_credit_with_feedback():
+    question = {
+        "question_ref": "1(a)",
+        "marks_total": 3,
+        "marking_points": [
+            "stores/releases energy",
+            "used in cellular processes",
+            "cell respiration"
+        ],
+        "accepted_alternatives": [
+            "energy for metabolism"
+        ],
+    }
+
+    result = backend_server.mark_exam_answer(question, "energy for metabolism and it is used in cell respiration")
+    assert result["awarded_marks"] >= 2
+    assert result["awarded_marks"] <= 3
+    assert "marks awarded" in result["feedback"].lower()
+    assert "expected answer" in result["feedback"].lower()
+    assert result["misconceptions"]
+
+
+def test_extract_concepts_and_assessments_with_user_isolation():
+    document_text = """
+    Photosynthesis is the process by which plants convert light energy into chemical energy.
+    Chlorophyll absorbs light in the thylakoid membranes. Glucose is produced in the Calvin cycle.
+    The process depends on water, carbon dioxide, and light. Photosynthesis supports plant growth and respiration.
+    """
+
+    concepts = backend_server.extract_concepts_from_document(document_text, document_title="Photosynthesis notes")
+    assert concepts["concepts"]
+    assert any("photosynthesis" in concept["name"].lower() for concept in concepts["concepts"])
+    assert concepts["relationships"]
+
+    assessment = backend_server.generate_concept_assessment(concepts["concepts"][0], "short")
+    assert assessment["prompt"]
+    assert assessment["difficulty"]
+
+    progress = backend_server.save_concept_map_progress("user-1", {"map_id": "map-1", "concept_id": "concept-1", "status": "weak"})
+    assert progress["user_id"] == "user-1"
+    assert progress["status"] == "weak"
+
+    isolated = backend_server.get_concept_map_progress("user-2", "map-1")
+    assert isolated == []
+
+
+def test_adaptive_learning_profile_and_retention_are_calculated_from_real_activity():
+    backend_server.MEMORY_STORE.clear()
+    backend_server.MEMORY_STORE.setdefault("quiz_attempts", [])
+    backend_server.MEMORY_STORE["quiz_attempts"].extend([
+        {"user_id": "user-1", "completed_at": "2024-05-10T09:00:00Z", "score": 92, "topic": "Photosynthesis"},
+        {"user_id": "user-1", "completed_at": "2024-05-11T09:00:00Z", "score": 76, "topic": "Photosynthesis"},
+        {"user_id": "user-1", "completed_at": "2024-05-12T09:00:00Z", "score": 55, "topic": "Cell respiration"},
+    ])
+    backend_server.MEMORY_STORE.setdefault("mock_exam_attempts", [])
+    backend_server.MEMORY_STORE["mock_exam_attempts"].extend([
+        {"user_id": "user-1", "exam_id": "exam-1", "percentage": 82, "topic": "Photosynthesis", "created_at": "2024-05-12T18:00:00Z"},
+        {"user_id": "user-1", "exam_id": "exam-2", "percentage": 64, "topic": "Cell respiration", "created_at": "2024-05-13T18:00:00Z"},
+    ])
+    backend_server.MEMORY_STORE.setdefault("flashcard_sets", [])
+    backend_server.MEMORY_STORE["flashcard_sets"].extend([
+        {"user_id": "user-1", "name": "Bio deck", "mastery_score": 88, "flashcards": [{"front": "Q", "back": "A"}], "created_at": "2024-05-12T12:00:00Z"},
+        {"user_id": "user-1", "name": "Resp deck", "mastery_score": 52, "flashcards": [{"front": "Q1", "back": "A1"}], "created_at": "2024-05-13T10:00:00Z"},
+    ])
+    backend_server.MEMORY_STORE.setdefault("study_sessions", [])
+    backend_server.MEMORY_STORE["study_sessions"].extend([
+        {"user_id": "user-1", "started_at": "2024-05-12T10:00:00Z", "ended_at": "2024-05-12T11:00:00Z", "duration_minutes": 60, "session_type": "study", "date_local": "2024-05-12"},
+        {"user_id": "user-1", "started_at": "2024-05-13T09:00:00Z", "ended_at": "2024-05-13T10:00:00Z", "duration_minutes": 60, "session_type": "study", "date_local": "2024-05-13"},
+    ])
+
+    profile = backend_server.build_adaptive_learning_profile("user-1")
+    assert profile["mastered_concepts"]
+    assert profile["developing_concepts"]
+    assert "Photosynthesis" in profile["mastered_concepts"]
+    assert "Cell respiration" in profile["developing_concepts"] or "Cell respiration" in profile["needs_attention"]
+
+    retention = backend_server.estimate_retention("user-1")
+    assert retention
+    assert any(item["concept"] == "Photosynthesis" for item in retention)
+    assert retention[0]["estimated_need_for_revision"] in {"low", "medium", "high"}
+
+
+def test_adaptive_difficulty_and_misconception_detection_use_real_history():
+    backend_server.MEMORY_STORE.clear()
+    backend_server.MEMORY_STORE.setdefault("quiz_attempts", [])
+    backend_server.MEMORY_STORE["quiz_attempts"].extend([
+        {"user_id": "user-2", "completed_at": "2024-05-14T09:00:00Z", "score": 30, "topic": "Photosynthesis", "question_id": "q1"},
+        {"user_id": "user-2", "completed_at": "2024-05-15T09:00:00Z", "score": 20, "topic": "Photosynthesis", "question_id": "q2"},
+        {"user_id": "user-2", "completed_at": "2024-05-16T09:00:00Z", "score": 80, "topic": "Light energy", "question_id": "q3"},
+    ])
+    backend_server.MEMORY_STORE.setdefault("mock_exam_attempts", [])
+    backend_server.MEMORY_STORE["mock_exam_attempts"].extend([
+        {"user_id": "user-2", "exam_id": "exam-b", "percentage": 42, "created_at": "2024-05-15T12:00:00Z", "question_results": [{"topic": "Photosynthesis", "misconceptions": ["Confusing chlorophyll with sunlight absorption"]}]},
+    ])
+
+    plan = backend_server.build_adaptive_question_plan("user-2", "Photosynthesis")
+    assert plan["recommended_difficulty"] in {"foundation", "intermediate", "advanced"}
+    assert isinstance(plan["prerequisite_concepts"], list)
+
+    misconceptions = backend_server.detect_misconceptions("user-2")
+    assert misconceptions
+    assert any(item["underlying_concept"] or item["concept"] for item in misconceptions)
+
+
+def test_adaptive_learning_path_and_user_isolation():
+    backend_server.MEMORY_STORE.clear()
+    backend_server.MEMORY_STORE.setdefault("mock_exam_attempts", [])
+    backend_server.MEMORY_STORE["mock_exam_attempts"].extend([
+        {"user_id": "user-1", "exam_id": "exam-a", "percentage": 68, "created_at": "2024-05-18T12:00:00Z"},
+        {"user_id": "user-2", "exam_id": "exam-b", "percentage": 89, "created_at": "2024-05-18T12:00:00Z"},
+    ])
+    backend_server.MEMORY_STORE.setdefault("flashcard_sets", [])
+    backend_server.MEMORY_STORE["flashcard_sets"].extend([
+        {"user_id": "user-1", "mastery_score": 58, "name": "Core bio", "flashcards": [{"front": "x", "back": "y"}]},
+        {"user_id": "user-2", "mastery_score": 88, "name": "Strong biology", "flashcards": [{"front": "x", "back": "y"}]},
+    ])
+
+    path_for_user_1 = backend_server.build_learning_path("user-1", "Biology exam prep")
+    path_for_user_2 = backend_server.build_learning_path("user-2", "Biology exam prep")
+    assert path_for_user_1
+    assert path_for_user_2
+    assert path_for_user_1[0]["title"]
+    assert path_for_user_1[0]["estimated_minutes"] > 0
+    assert any(item["title"] != path_for_user_2[0]["title"] or item["estimated_minutes"] != path_for_user_2[0]["estimated_minutes"] for item in path_for_user_1[:1])
+
+
 def test_library_catalog_raises_clear_error_on_query_failure(monkeypatch):
     backend_server.MEMORY_STORE.clear()
     monkeypatch.setattr(backend_server, "HAS_REAL_SUPABASE", True)
@@ -587,6 +783,56 @@ def test_daily_goal_progress_tracks_today_minutes_and_remaining_goal():
     assert goal["goal_reached"] is True
 
 
+def test_build_learning_analytics_uses_real_study_and_mock_exam_data(monkeypatch):
+    backend_server.MEMORY_STORE.clear()
+    backend_server.MEMORY_STORE["mock_exam_attempts"] = [{
+        "id": "attempt-1",
+        "user_id": "u-1",
+        "exam_id": "exam-1",
+        "percentage": 72,
+        "total_marks": 18,
+        "max_marks": 25,
+        "created_at": "2026-10-24T09:00:00Z",
+    }]
+    backend_server.MEMORY_STORE["mock_exams"] = [{
+        "id": "exam-1",
+        "user_id": "u-1",
+        "questions": [{"topic": "Photosynthesis", "difficulty": "medium"}],
+    }]
+
+    class FakeFindResult:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def to_list(self, limit):
+            return self.rows
+
+    monkeypatch.setattr(backend_server.db.documents, "count_documents", AsyncMock(return_value=4))
+    monkeypatch.setattr(backend_server.db.quizzes, "count_documents", AsyncMock(return_value=3))
+    monkeypatch.setattr(backend_server.db.flashcard_sets, "find", lambda query: FakeFindResult([
+        {
+            "id": "deck-1",
+            "user_id": "u-1",
+            "name": "Biology deck",
+            "flashcards": [
+                {"front": "What is photosynthesis?", "back": "A process plants use to turn light into energy"},
+                {"front": "Why is sunlight important?", "back": "It provides the light energy"},
+            ],
+            "mastery_score": 82,
+            "review_count": 5,
+        }
+    ]))
+
+    result = asyncio.run(backend_server.build_learning_analytics({"id": "u-1", "daily_study_goal": 60, "timezone": "UTC"}))
+    assert result["documents_uploaded"] == 4
+    assert result["quizzes_completed"] == 3
+    assert result["flashcards_total"] == 2
+    assert result["flashcard_mastery"]["average_mastery"] == 82.0
+    assert result["mock_exam_history"][0]["percentage"] == 72
+    assert len(result["insights"]) >= 2
+    assert result["overall_progress"] >= 0
+
+
 def test_validate_study_session_rejects_invalid_or_manipulated_durations():
     try:
         backend_server.validate_study_session_payload({"duration_minutes": 0, "started_at": "2026-10-23T09:00:00Z", "ended_at": "2026-10-23T09:30:00Z"})
@@ -621,3 +867,52 @@ def test_streak_summary_handles_timezone_boundary_days():
     summary = backend_server.calculate_streak_summary(sessions=sessions, timezone_name="America/New_York")
     assert summary["total_active_days"] == 2
     assert summary["active_days"] == ["2026-10-23", "2026-10-24"]
+
+
+def test_normalize_flashcard_cards_strips_blank_entries_and_preserves_valid_content():
+    cards = [
+        {"front": "What is photosynthesis?", "back": "A process plants use to make food", "hint": "Think about sunlight"},
+        {"front": "", "back": "", "hint": "ignored"},
+        {"front": "Why is chlorophyll important?", "back": "It absorbs light energy"},
+    ]
+
+    normalized = backend_server.normalize_flashcard_cards(cards)
+    assert len(normalized) == 2
+    assert normalized[0]["front"] == "What is photosynthesis?"
+    assert normalized[1]["hint"] == ""
+
+
+def test_prepare_mock_exam_payload_validates_question_count_and_types():
+    payload = backend_server.prepare_mock_exam_payload({
+        "document_id": "doc-1",
+        "topic_selection": ["Photosynthesis", "Cell structure"],
+        "difficulty": "mixed",
+        "question_types": ["multiple_choice", "short_answer", "structured"],
+        "num_questions": 4,
+        "duration_minutes": 45,
+    })
+
+    assert payload["duration_minutes"] == 45
+    assert payload["num_questions"] == 4
+    assert payload["question_types"] == ["multiple_choice", "short_answer", "structured"]
+    assert payload["topic_selection"] == ["Photosynthesis", "Cell structure"]
+
+
+def test_grade_essay_question_handles_partial_credit_and_model_answer():
+    result = backend_server.grade_mock_question_answer(
+        question={
+            "type": "short_answer",
+            "question": "Explain why plants need sunlight.",
+            "marks": 4,
+            "marking_criteria": ["States that sunlight provides energy for photosynthesis", "Links energy to sugar production"],
+            "model_answer": "Sunlight provides the energy for photosynthesis, which helps plants make glucose.",
+        },
+        user_answer="Sunlight gives plants energy to make food.",
+        difficulty="medium",
+    )
+
+    assert result["max_marks"] == 4
+    assert 0 <= result["awarded_marks"] <= 4
+    assert "feedback" in result
+    assert "model_answer" in result
+    assert "misconceptions" in result

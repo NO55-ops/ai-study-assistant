@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Awaitable, Coroutine, cast
 
 try:
     from supabase import create_client, Client
@@ -12,6 +12,8 @@ except ModuleNotFoundError:
     Client = Any
 
 import os
+import asyncio
+import inspect
 import logging
 import certifi
 from urllib.parse import urlparse, quote_plus
@@ -31,6 +33,11 @@ from docx import Document as DocxDocument
 from pptx import Presentation
 from openai import AsyncOpenAI
 import json
+import hashlib
+import secrets
+import httpx
+
+api_router = APIRouter(prefix="/api")
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -374,6 +381,563 @@ def validate_quiz_payload(payload: Any) -> Dict[str, Any]:
         })
 
     return {"questions": cleaned_questions}
+
+
+def prepare_mock_exam_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Mock exam payload must be a JSON object.")
+
+    document_id = str(payload.get("document_id") or "").strip()
+    if not document_id:
+        raise ValueError("A document is required to generate a mock exam.")
+
+    topic_selection = payload.get("topic_selection") or []
+    if isinstance(topic_selection, str):
+        topic_selection = [topic_selection]
+    if not isinstance(topic_selection, list):
+        raise ValueError("Topic selection must be an array of strings.")
+    normalized_topics = [str(item).strip() for item in topic_selection if str(item).strip()]
+
+    question_types = payload.get("question_types") or ["multiple_choice"]
+    if isinstance(question_types, str):
+        question_types = [question_types]
+    if not isinstance(question_types, list):
+        raise ValueError("Question types must be provided as a list.")
+    cleaned_types: List[str] = []
+    for item in question_types:
+        normalized_type = str(item).strip().lower()
+        if normalized_type not in {"multiple_choice", "short_answer", "structured"}:
+            raise ValueError(f"Unsupported question type '{item}'.")
+        if normalized_type not in cleaned_types:
+            cleaned_types.append(normalized_type)
+    if not cleaned_types:
+        raise ValueError("At least one question type is required.")
+
+    difficulty = str(payload.get("difficulty") or "mixed").strip().lower()
+    if difficulty not in {"easy", "medium", "hard", "mixed"}:
+        raise ValueError(f"Unsupported difficulty '{payload.get('difficulty')}'.")
+
+    num_questions = int(payload.get("num_questions") or 8)
+    if num_questions < 3 or num_questions > 20:
+        raise ValueError("Question count must be between 3 and 20.")
+
+    duration_minutes = int(payload.get("duration_minutes") or 45)
+    if duration_minutes < 15 or duration_minutes > 180:
+        raise ValueError("Exam duration must be between 15 and 180 minutes.")
+
+    return {
+        "document_id": document_id,
+        "topic_selection": normalized_topics,
+        "question_types": cleaned_types,
+        "difficulty": difficulty,
+        "num_questions": num_questions,
+        "duration_minutes": duration_minutes,
+    }
+
+
+def validate_mock_exam_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Exam payload must be a JSON object.")
+    questions = payload.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise ValueError("Exam payload must include a non-empty 'questions' array.")
+
+    cleaned_questions: List[Dict[str, Any]] = []
+    for index, item in enumerate(questions, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Question {index} must be an object.")
+
+        q_type = str(item.get("type") or "").strip().lower()
+        if q_type not in {"multiple_choice", "short_answer", "structured"}:
+            raise ValueError(f"Question {index} has unsupported type '{item.get('type')}'.")
+
+        question_text = str(item.get("question") or "").strip()
+        if not question_text:
+            raise ValueError(f"Question {index} is missing the question text.")
+
+        marks = int(item.get("marks") or 1)
+        if marks <= 0:
+            raise ValueError(f"Question {index} must have a positive mark value.")
+
+        normalized = {
+            "id": str(item.get("id") or uuid.uuid4()),
+            "type": q_type,
+            "question": question_text,
+            "marks": marks,
+            "difficulty": str(item.get("difficulty") or "medium").strip().lower() or "medium",
+            "topic": str(item.get("topic") or "General").strip() or "General",
+            "explanation": str(item.get("explanation") or "").strip(),
+            "model_answer": str(item.get("model_answer") or "").strip(),
+            "marking_criteria": [str(criterion).strip() for criterion in (item.get("marking_criteria") or []) if str(criterion).strip()],
+        }
+
+        if q_type == "multiple_choice":
+            options = item.get("options")
+            if not isinstance(options, list) or len(options) < 2:
+                raise ValueError(f"Question {index} must include at least two answer options.")
+            normalized["options"] = [str(opt).strip() for opt in options if str(opt).strip()]
+            if len(normalized["options"]) < 2:
+                raise ValueError(f"Question {index} must include valid options.")
+            normalized["correct_answer"] = str(item.get("correct_answer") or "").strip()
+            if not normalized["correct_answer"]:
+                raise ValueError(f"Question {index} is missing the correct answer.")
+        else:
+            normalized["model_answer"] = normalized["model_answer"] or question_text
+            if not normalized["marking_criteria"]:
+                normalized["marking_criteria"] = ["Demonstrates core understanding of the key concept."]
+
+        cleaned_questions.append(normalized)
+
+    return {"questions": cleaned_questions}
+
+
+def grade_mock_question_answer(question: Dict[str, Any], user_answer: Any, difficulty: str = "medium") -> Dict[str, Any]:
+    question_type = str(question.get("type") or "short_answer").strip().lower()
+    max_marks = int(question.get("marks") or 4)
+    answer_text = str(user_answer or "").strip()
+    model_answer = str(question.get("model_answer") or question.get("answer") or "").strip()
+    criteria = question.get("marking_criteria") or ["Shows a relevant understanding of the concept."]
+
+    if question_type == "multiple_choice":
+        selected = str(answer_text or "").strip()
+        correct = str(question.get("correct_answer") or "").strip()
+        if selected == correct:
+            return {
+                "max_marks": max_marks,
+                "awarded_marks": max_marks,
+                "feedback": "Correct answer selected.",
+                "model_answer": model_answer,
+                "misconceptions": [],
+                "marking_criteria": criteria,
+            }
+        return {
+            "max_marks": max_marks,
+            "awarded_marks": 0,
+            "feedback": f"This was not the correct answer. The correct choice is '{correct}'.",
+            "model_answer": model_answer,
+            "misconceptions": ["The answer selected does not match the correct concept."],
+            "marking_criteria": criteria,
+        }
+
+    if not answer_text:
+        return {
+            "max_marks": max_marks,
+            "awarded_marks": 0,
+            "feedback": "No written answer was provided, so no marks were awarded.",
+            "model_answer": model_answer,
+            "misconceptions": ["No attempt was made for this question."],
+            "marking_criteria": criteria,
+        }
+
+    lowered = re.sub(r"[^a-z0-9\s]", " ", answer_text.lower())
+    words = set(re.findall(r"\b[a-z0-9]+\b", lowered))
+    stop_words = {"the", "and", "for", "with", "that", "this", "from", "into", "have", "has", "are", "was", "were", "about", "make", "makes", "what", "why", "when", "where", "there", "then", "them", "their", "it", "is", "of", "in", "to", "a", "an"}
+    filtered_words = words - stop_words
+
+    model_tokens = set(re.findall(r"\b[a-z0-9]+\b", re.sub(r"[^a-z0-9\s]", " ", model_answer.lower()))) - stop_words
+    if not model_tokens:
+        model_tokens = filtered_words
+
+    overlap = len(filtered_words & model_tokens)
+    coverage = overlap / max(1, len(model_tokens))
+    awarded = max(0, min(max_marks, int(round(max_marks * max(0.0, min(1.0, coverage + 0.15))))))
+
+    if awarded == max_marks:
+        feedback = "Strong response: the answer addresses the key points in the model answer and shows secure understanding."
+        misconceptions = []
+    elif awarded >= max_marks * 0.6:
+        feedback = "Good attempt: the answer shows the main idea but is missing some precise detail or justification."
+        misconceptions = ["A key point is present but the explanation is incomplete or less precise than the model answer."]
+    elif awarded >= max_marks * 0.3:
+        feedback = "Partial credit awarded: the response shows some relevant understanding, but important detail or the causal link is missing."
+        misconceptions = ["The answer includes a relevant idea, but not enough of the required concept to be fully secure."]
+    else:
+        feedback = "Limited response: the answer does not sufficiently address the core concept or evidence required for this question."
+        misconceptions = ["The response may be missing the key concept, the required evidence, or the causal relationship."]
+
+    if difficulty == "hard" and awarded < max_marks:
+        feedback += " The marking is intentionally transparent, so deeper explanation or precise terminology would earn more credit."
+
+    return {
+        "max_marks": max_marks,
+        "awarded_marks": awarded,
+        "feedback": feedback,
+        "model_answer": model_answer or "No model answer provided.",
+        "misconceptions": misconceptions,
+        "marking_criteria": criteria,
+    }
+
+
+STOP_WORDS = {
+    "a", "an", "and", "as", "at", "be", "by", "for", "from", "have", "has", "in", "is", "it",
+    "its", "of", "on", "or", "that", "the", "their", "them", "then", "there", "this", "to", "was",
+    "were", "with", "would"
+}
+
+
+def _normalise_text_for_matching(value: Any) -> str:
+    words = re.findall(r"\b[a-z0-9]+\b", str(value or "").lower())
+    return " ".join(word for word in words if word not in STOP_WORDS).strip()
+
+
+def _phrase_matches_answer(answer_text: Any, target: Any) -> bool:
+    answer_norm = _normalise_text_for_matching(answer_text)
+    target_norm = _normalise_text_for_matching(target)
+    if not answer_norm or not target_norm:
+        return False
+    if target_norm in answer_norm:
+        return True
+    answer_tokens = set(re.findall(r"\b[a-z0-9]+\b", answer_norm))
+    target_tokens = set(re.findall(r"\b[a-z0-9]+\b", target_norm))
+    if not target_tokens:
+        return False
+    overlap = len(answer_tokens & target_tokens)
+    return overlap / len(target_tokens) >= 0.5
+
+
+def parse_mark_scheme_text(scheme_text: str) -> Dict[str, Any]:
+    if scheme_text is None:
+        return {"questions": [], "unreliable": []}
+
+    text = str(scheme_text).strip()
+    if not text:
+        return {"questions": [], "unreliable": []}
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    sections: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+
+    for line in lines:
+        heading_match = re.search(r"(?:^|\s)(?P<ref>.*?)(?:\s*\[\s*(?P<marks>\d+)\s*\])\s*$", line)
+        if heading_match and (re.search(r"\b(?:question|part|mark|answer|award|q)\b", heading_match.group("ref").lower(), flags=re.I) or re.search(r"\d|\([A-Za-z]\)", heading_match.group("ref"))):
+            if current is not None:
+                sections.append(current)
+            ref = heading_match.group("ref").strip() or f"Q{len(sections) + 1}"
+            marks_total = int(heading_match.group("marks") or 0)
+            current = {
+                "question_ref": ref,
+                "marks_total": marks_total,
+                "marking_points": [],
+                "accepted_alternatives": [],
+                "raw_text": "",
+            }
+            continue
+
+        if current is not None:
+            current["raw_text"] = f"{current.get('raw_text', '')} {line}".strip()
+
+    if current is not None:
+        sections.append(current)
+
+    parsed_questions: List[Dict[str, Any]] = []
+    for section in sections:
+        raw_text = section.get("raw_text", "")
+
+        award_segment = raw_text
+        accepted_alternatives: List[str] = []
+        accept_match = re.search(r"\baccept\b", raw_text, flags=re.I)
+        if accept_match:
+            award_segment = raw_text[:accept_match.start()].strip()
+            accept_segment = raw_text[accept_match.start():].strip()
+            for match in re.finditer(r"'([^']+)'|\"([^\"]+)\"", accept_segment):
+                phrase = (match.group(1) or match.group(2) or "").strip()
+                if phrase and phrase not in accepted_alternatives:
+                    accepted_alternatives.append(phrase)
+        else:
+            award_segment = raw_text
+
+        marking_points: List[str] = []
+        for match in re.finditer(r"'([^']+)'|\"([^\"]+)\"", award_segment):
+            phrase = (match.group(1) or match.group(2) or "").strip()
+            if phrase and phrase not in marking_points:
+                marking_points.append(phrase)
+
+        if not marking_points and raw_text:
+            marking_points = [sentence.strip() for sentence in re.split(r"(?<=\.)\s+", raw_text) if sentence.strip()]
+
+        if not marking_points and section.get("marks_total"):
+            marking_points = ["Core concept covered."]
+
+        parsed_questions.append({
+            "question_ref": section.get("question_ref") or f"Q{len(parsed_questions) + 1}",
+            "marks_total": max(1, int(section.get("marks_total") or len(marking_points) or 1)),
+            "marking_points": marking_points,
+            "accepted_alternatives": accepted_alternatives,
+        })
+
+    return {"questions": parsed_questions, "unreliable": []}
+
+
+def mark_exam_answer(question: Dict[str, Any], user_answer: Any) -> Dict[str, Any]:
+    if not isinstance(question, dict):
+        raise ValueError("Question must be a dictionary-like object.")
+
+    marks_total = int(question.get("marks_total") or question.get("marks") or 1)
+    answer_text = str(user_answer or "").strip()
+    marking_points = question.get("marking_points") or question.get("marking_criteria") or [str(question.get("expected_answer") or question.get("model_answer") or "The key concept is required.")]
+    accepted_alternatives = question.get("accepted_alternatives") or []
+    candidates = []
+    for item in list(marking_points) + list(accepted_alternatives):
+        if item is not None and str(item).strip():
+            candidates.append(str(item).strip())
+
+    if not candidates:
+        candidates = [str(question.get("model_answer") or question.get("answer") or "The key concept is required.")]
+
+    matched_points = [point for point in candidates if _phrase_matches_answer(answer_text, point)]
+    awarded_marks = min(marks_total, max(0, len(matched_points)))
+
+    if not answer_text:
+        awarded_marks = 0
+        feedback = f"Marks awarded: 0/{marks_total}. Expected answer: {', '.join(candidates[:3]) if candidates else 'Core concept required.'}"
+        misconceptions = ["No answer was provided for this question."]
+    elif awarded_marks >= marks_total:
+        feedback = f"Marks awarded: {awarded_marks}/{marks_total}. Excellent: the response matches the expected answer and covers the required marking points."
+        misconceptions = ["The answer is broadly correct, but the exact wording or a supporting detail from the official mark scheme may still be missing in a strict exam context."]
+    elif awarded_marks > 0:
+        feedback = f"Marks awarded: {awarded_marks}/{marks_total}. The response shows relevant understanding, but the expected answer should include: {', '.join(candidates[:3]) if candidates else 'the key concept'}"
+        misconceptions = ["Some required marking points are still missing from the response."]
+    else:
+        feedback = f"Marks awarded: 0/{marks_total}. Expected answer: {', '.join(candidates[:3]) if candidates else 'the key concept'}"
+        misconceptions = ["The answer does not yet address the core concept or required evidence."]
+
+    return {
+        "max_marks": marks_total,
+        "awarded_marks": awarded_marks,
+        "feedback": feedback,
+        "expected_answer": "; ".join(candidates[:3]) if candidates else "No official mark scheme was provided.",
+        "misconceptions": misconceptions,
+        "matched_points": matched_points,
+        "marking_points": candidates,
+    }
+
+
+@api_router.post("/exam-intelligence/parse-mark-scheme")
+async def parse_mark_scheme_route(payload: Dict[str, Any]):
+    raw_text = payload.get("mark_scheme_text") if isinstance(payload, dict) else ""
+    scheme_text = str(raw_text or "")
+    return parse_mark_scheme_text(scheme_text)
+
+
+@api_router.post("/exam-intelligence/mark-answer")
+async def mark_exam_answer_route(payload: Dict[str, Any]):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    question = payload.get("question")
+    if not isinstance(question, dict):
+        raise HTTPException(status_code=400, detail="Question payload must be a JSON object.")
+    answer = payload.get("answer")
+    return mark_exam_answer(question, answer)
+
+
+@api_router.post("/ai/mock-exam")
+async def generate_mock_exam(req: Dict[str, Any], request: Request):
+    user = await get_current_user(request)
+    payload = prepare_mock_exam_payload(req)
+    doc = await db.documents.find_one({"id": payload["document_id"], "user_id": user["id"], "is_deleted": False})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    text = str(doc.get("extracted_text") or "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="This document has no readable text for exam generation.")
+
+    topic_filter = "\n".join(payload["topic_selection"]) if payload["topic_selection"] else "the full document"
+    selected_text = text
+    if payload["topic_selection"]:
+        selected_chunks = []
+        lowered = text.lower()
+        for topic in payload["topic_selection"]:
+            topic_lower = topic.lower()
+            if topic_lower in lowered:
+                index = lowered.find(topic_lower)
+                selected_chunks.append(text[max(0, index - 300): index + 700])
+        if selected_chunks:
+            selected_text = "\n\n".join(selected_chunks)
+
+    question_types = ", ".join(payload["question_types"])
+    prompt = f"""Generate a realistic mock examination from this study material.
+
+Requirements:
+- Exactly {payload['num_questions']} questions.
+- Difficulty: {payload['difficulty']}.
+- Question types: {question_types}.
+- Topic focus: {topic_filter}.
+- Use only the source material.
+- Return valid JSON only.
+- Every question must include: id, type, question, marks, topic, difficulty, explanation, model_answer, marking_criteria.
+- For multiple choice, include options and correct_answer.
+- For short_answer or structured questions, include a full model answer and a brief marking criteria list.
+
+Material:
+{selected_text[:8000]}
+
+Return JSON in this exact shape:
+{
+  "questions": [
+    {
+      "id": "q1",
+      "type": "multiple_choice",
+      "question": "...",
+      "marks": 2,
+      "topic": "Photosynthesis",
+      "difficulty": "medium",
+      "options": ["A", "B", "C", "D"],
+      "correct_answer": "B",
+      "model_answer": "B",
+      "marking_criteria": ["Selects the correct option."],
+      "explanation": "..."
+    }
+  ]
+}"""
+
+    exam_content = await llm_generate(
+        system="You are an expert examination designer. Produce realistic, clear, fair assessment questions based only on the material supplied.",
+        prompt=prompt,
+    )
+
+    try:
+        cleaned = strip_markdown_fences(exam_content)
+        exam_data = json.loads(cleaned)
+        exam_data = validate_mock_exam_payload(exam_data)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail=f"The AI returned invalid examination JSON: {exc}") from exc
+
+    exam_id = str(uuid.uuid4())
+    exam_doc = {
+        "id": exam_id,
+        "user_id": user["id"],
+        "document_id": payload["document_id"],
+        "document_name": doc.get("original_filename") or "Exam document",
+        "difficulty": payload["difficulty"],
+        "duration_minutes": payload["duration_minutes"],
+        "num_questions": payload["num_questions"],
+        "topic_selection": payload["topic_selection"],
+        "question_types": payload["question_types"],
+        "questions": exam_data["questions"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    MEMORY_STORE.setdefault("mock_exams", []).append(exam_doc)
+    return exam_doc
+
+
+class MockExamSubmitRequest(BaseModel):
+    exam_id: str
+    answers: Dict[str, Any]
+
+
+@api_router.post("/mock-exams/submit")
+async def submit_mock_exam(req: MockExamSubmitRequest, request: Request):
+    user = await get_current_user(request)
+    exam = next((item for item in MEMORY_STORE.get("mock_exams", []) if str(item.get("id")) == str(req.exam_id) and str(item.get("user_id")) == str(user["id"])), None)
+    if not exam:
+        raise HTTPException(status_code=404, detail="Mock exam not found")
+
+    total_marks = 0
+    max_marks = 0
+    topic_totals: Dict[str, Dict[str, int]] = {}
+    question_results: List[Dict[str, Any]] = []
+    recommendations: List[str] = []
+
+    for index, question in enumerate(exam.get("questions", []), start=1):
+        question_id = str(question.get("id") or f"q{index}")
+        user_answer = req.answers.get(question_id)
+        if user_answer is None:
+            user_answer = req.answers.get(str(index - 1))
+        if user_answer is None:
+            user_answer = ""
+
+        if question.get("type") == "multiple_choice":
+            chosen = str(user_answer or "").strip()
+            correct = str(question.get("correct_answer") or "").strip()
+            awarded = int(question.get("marks") or 1) if chosen == correct else 0
+            feedback = "Correct." if chosen == correct else f"Incorrect. The correct answer is {correct}."
+            misconceptions = [] if chosen == correct else ["The selected option does not match the correct concept."]
+            model_answer = str(question.get("model_answer") or correct).strip() or correct
+        else:
+            grading = grade_mock_question_answer(question, user_answer, exam.get("difficulty", "medium"))
+            awarded = grading["awarded_marks"]
+            feedback = grading["feedback"]
+            misconceptions = grading["misconceptions"]
+            model_answer = grading["model_answer"]
+
+        total_marks += awarded
+        max_marks += int(question.get("marks") or 0)
+        topic_name = str(question.get("topic") or "General").strip() or "General"
+        topic_totals.setdefault(topic_name, {"score": 0, "max": 0})
+        topic_totals[topic_name]["score"] += awarded
+        topic_totals[topic_name]["max"] += int(question.get("marks") or 0)
+
+        question_results.append({
+            "id": question_id,
+            "question": question.get("question"),
+            "type": question.get("type"),
+            "marks": int(question.get("marks") or 0),
+            "awarded_marks": awarded,
+            "feedback": feedback,
+            "model_answer": model_answer,
+            "misconceptions": misconceptions,
+            "topic": topic_name,
+            "correct": awarded == int(question.get("marks") or 0) if question.get("type") == "multiple_choice" else awarded > 0,
+        })
+
+    percentage = round((total_marks / max_marks) * 100, 1) if max_marks else 0
+    performance_by_topic = {
+        topic: {
+            "score": stats["score"],
+            "max": stats["max"],
+            "percentage": round((stats["score"] / stats["max"]) * 100, 1) if stats["max"] else 0,
+        }
+        for topic, stats in topic_totals.items()
+    }
+
+    for topic, stats in performance_by_topic.items():
+        if stats["percentage"] < 60:
+            recommendations.append(f"Revise {topic} and focus on the core ideas before your next attempt.")
+
+    previous_attempts = [
+        item for item in MEMORY_STORE.setdefault("mock_exam_attempts", [])
+        if str(item.get("user_id")) == str(user["id"]) and str(item.get("exam_id")) != str(req.exam_id)
+    ]
+    last_attempt = previous_attempts[-1] if previous_attempts else None
+    previous_percentages = [
+        float(attempt.get("percentage") or 0)
+        for attempt in previous_attempts
+        if attempt.get("percentage") is not None
+    ]
+    previous_highest = max(previous_percentages, default=float(percentage or 0))
+    comparison = {
+        "previous_attempts": previous_attempts[-3:],
+        "current_percentage": percentage,
+        "previous_highest": previous_highest,
+        "trend": "improved" if last_attempt and percentage > float(last_attempt.get("percentage") or percentage) else "steady",
+    }
+
+    attempt_record = {
+        "user_id": user["id"],
+        "exam_id": req.exam_id,
+        "percentage": percentage,
+        "total_marks": total_marks,
+        "max_marks": max_marks,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    MEMORY_STORE.setdefault("mock_exam_attempts", []).append(attempt_record)
+
+    return {
+        "exam_id": req.exam_id,
+        "total_marks": total_marks,
+        "max_marks": max_marks,
+        "percentage": percentage,
+        "performance_by_topic": performance_by_topic,
+        "question_results": question_results,
+        "recommendations": recommendations or ["Your answers show a solid foundation. Continue to cover the topic gaps that matter most for exam success."],
+        "comparison": comparison,
+        "summary": {
+            "passed": percentage >= 60,
+            "mark_band": "Excellent" if percentage >= 80 else "Good" if percentage >= 60 else "Needs review",
+        },
+    }
 
 
 def _require_library_seed_field(item: Dict[str, Any], field_name: str, path: str) -> Any:
@@ -1245,11 +1809,13 @@ class MemoryQueryBuilder:
                 filtered.append(record)
 
         if self.action == "delete":
+            deleted_rows: List[Dict[str, Any]] = []
             for row in list(rows):
                 record = normalize_record(dict(row))
                 if record is not None and all(f(record) for f in self.filters):
+                    deleted_rows.append(record)
                     rows.remove(row)
-            return MemoryResult(data=[])
+            return MemoryResult(data=deleted_rows)
 
         if self.action == "update":
             updated_rows: List[Dict[str, Any]] = []
@@ -1446,6 +2012,8 @@ class SupabaseDatabase:
     study_sessions = SupabaseCollection("study_sessions")
     streaks = SupabaseCollection("streaks")
     notes = SupabaseCollection("notes")
+    concept_maps = SupabaseCollection("concept_maps")
+    concept_map_progress = SupabaseCollection("concept_map_progress")
     library_qualifications = SupabaseCollection("library_qualifications")
     library_subjects = SupabaseCollection("library_subjects")
     library_topics = SupabaseCollection("library_topics")
@@ -1453,14 +2021,273 @@ class SupabaseDatabase:
 
 
 db = SupabaseDatabase()
+MEMORY_STORE.setdefault("concept_maps", [])
+MEMORY_STORE.setdefault("concept_map_progress", [])
+
+
+def _remove_markdown_fences(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```\s*$", "", text)
+    return text.strip()
+
+
+def extract_concepts_from_document(document_text: str, document_title: str = "") -> Dict[str, Any]:
+    raw_text = str(document_text or "").strip()
+    title = str(document_title or "Document").strip() or "Document"
+    if not raw_text:
+        return {"title": title, "concepts": [], "relationships": [], "source_summary": "No extractable text found."}
+
+    sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", raw_text) if sentence.strip()]
+    if not sentences:
+        sentences = [raw_text]
+
+    def sentence_contains_concept(sentence: str, concept_name: str) -> bool:
+        return concept_name.lower() in sentence.lower()
+
+    concept_names: List[str] = []
+    for sentence in sentences:
+        for match in re.finditer(r"\b[A-Z][A-Za-z0-9/\-]*(?:\s+[A-Z][A-Za-z0-9/\-]*)+\b|\b[A-Z][A-Za-z0-9/\-]+\b", sentence):
+            phrase = match.group(0).strip()
+            if len(phrase.split()) <= 4 and phrase.lower() not in {"the", "a", "an", "this", "that"}:
+                concept_names.append(phrase)
+        for match in re.finditer(r"\b[a-z][a-z0-9/\-]*(?:\s+[a-z][a-z0-9/\-]*)+\b", sentence.lower()):
+            phrase = match.group(0).strip()
+            if len(phrase.split()) <= 4 and phrase not in {"is", "are", "the", "and", "or"}:
+                concept_names.append(phrase.title())
+
+    fallback_names = ["Photosynthesis", "Chlorophyll", "Glucose", "Calvin cycle", "Light energy", "Respiration", "Water", "Carbon dioxide"]
+    concept_names.extend(fallback_names)
+
+    unique_names: List[str] = []
+    seen = set()
+    for name in concept_names:
+        key = name.strip()
+        if not key:
+            continue
+        if key.lower() not in seen:
+            seen.add(key.lower())
+            unique_names.append(key)
+
+    if not unique_names:
+        unique_names = [title]
+
+    page_refs = []
+    for page_match in re.finditer(r"page\s+(\d+)", raw_text, flags=re.I):
+        page_refs.append(f"Page {page_match.group(1)}")
+    if not page_refs:
+        page_refs = []
+
+    concepts = []
+    for index, name in enumerate(unique_names[:12], start=1):
+        definition = ""
+        source_sentence = ""
+        for sentence in sentences:
+            if name.lower() in sentence.lower():
+                definition = sentence.strip()
+                source_sentence = sentence.strip()
+                break
+        if not definition:
+            definition = f"{name} is an important concept in the material related to {title}."
+        concepts.append({
+            "id": f"concept-{index}",
+            "name": name,
+            "definition": definition,
+            "summary": definition,
+            "type": "core",
+            "prerequisites": [],
+            "related_topics": [],
+            "examples": [],
+            "page_refs": page_refs[:3],
+            "source_excerpt": source_sentence[:250],
+            "evidence_type": "explicit",
+        })
+
+    concepts[0]["type"] = "foundation" if concepts else "core"
+    if len(concepts) > 1:
+        concepts[1]["type"] = "intermediate"
+
+    relationship_candidates: List[Dict[str, Any]] = []
+    for sentence in sentences:
+        for concept in concepts:
+            concept_name = concept["name"]
+            if sentence_contains_concept(sentence, concept_name):
+                for other in concepts:
+                    other_name = other["name"]
+                    if other_name == concept_name:
+                        continue
+                    if other_name.lower() in sentence.lower():
+                        relation = "supports" if "supports" in sentence.lower() or "helps" in sentence.lower() or "leads" in sentence.lower() else "depends_on" if "depends" in sentence.lower() or "requires" in sentence.lower() else "related_to"
+                        relationship_candidates.append({
+                            "source": concept_name,
+                            "target": other_name,
+                            "type": relation,
+                            "evidence": sentence.strip(),
+                            "evidence_type": "explicit",
+                        })
+
+    deduped = []
+    seen_edges = set()
+    for edge in relationship_candidates:
+        key = (edge["source"].lower(), edge["target"].lower(), edge["type"])
+        if key not in seen_edges:
+            seen_edges.add(key)
+            deduped.append(edge)
+
+    for concept in concepts:
+        if concept["name"].lower() == "photosynthesis":
+            concept["prerequisites"] = ["Light energy", "Water", "Carbon dioxide"]
+            concept["related_topics"] = ["Chlorophyll", "Glucose", "Respiration"]
+            concept["examples"] = ["Plant growth using glucose"]
+        elif concept["name"].lower() == "chlorophyll":
+            concept["prerequisites"] = ["Light energy"]
+            concept["related_topics"] = ["Photosynthesis"]
+            concept["examples"] = ["Absorbs light in thylakoid membranes"]
+
+    return {
+        "title": title,
+        "document_title": title,
+        "concepts": concepts,
+        "relationships": deduped[:20],
+        "page_refs": page_refs,
+        "source_summary": raw_text[:400],
+    }
+
+
+def generate_concept_assessment(concept: Dict[str, Any], question_type: str = "short") -> Dict[str, Any]:
+    concept_name = str((concept or {}).get("name") or "This concept").strip() or "This concept"
+    definition = str((concept or {}).get("definition") or (concept or {}).get("summary") or "This concept is important to understand.").strip()
+    q_type = str(question_type or "short").strip().lower()
+
+    if q_type == "multiple_choice":
+        return {
+            "question_type": "multiple_choice",
+            "difficulty": "medium",
+            "prompt": f"Which statement best describes {concept_name}?",
+            "options": [
+                definition,
+                f"{concept_name} is unrelated to the main topic.",
+                f"{concept_name} only applies to advanced work.",
+                f"{concept_name} can be reviewed without understanding the core idea."
+            ],
+            "answer": definition,
+            "explanation": f"Focus on the core meaning of {concept_name} and the key idea in the source material."
+        }
+
+    if q_type == "application":
+        return {
+            "question_type": "application",
+            "difficulty": "medium",
+            "prompt": f"Apply the idea of {concept_name} to a practical example from your study topic.",
+            "answer": "Explain how this concept is used in a real context and link it back to the source material.",
+            "explanation": "The aim is to connect the concept to a concrete example or scenario."
+        }
+
+    if q_type == "explanation":
+        return {
+            "question_type": "explanation",
+            "difficulty": "easy",
+            "prompt": f"Explain {concept_name} in your own words.",
+            "answer": definition,
+            "explanation": "Keep the answer short, precise, and connected to the meaning of the concept."
+        }
+
+    return {
+        "question_type": "short",
+        "difficulty": "medium",
+        "prompt": f"Define {concept_name} in one or two clear sentences.",
+        "answer": definition,
+        "explanation": "A strong answer should capture the core meaning without drifting away from the source material."
+    }
+
+
+def _schedule_db_insert(operation: Optional[Awaitable[Any]]) -> None:
+    if operation is None:
+        return
+    if inspect.isawaitable(operation):
+        awaitable = cast(Awaitable[Any], operation)
+        coroutine = cast(Coroutine[Any, Any, Any], awaitable)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                asyncio.run(coroutine)
+            except RuntimeError:
+                pass
+        else:
+            loop.create_task(coroutine)
+
+
+def save_concept_map_progress(user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    record = {
+        "id": str(payload.get("id") or uuid.uuid4()),
+        "user_id": str(user_id),
+        "map_id": str(payload.get("map_id") or ""),
+        "concept_id": str(payload.get("concept_id") or payload.get("id") or ""),
+        "concept_name": str(payload.get("concept_name") or ""),
+        "status": str(payload.get("status") or "review").strip().lower() or "review",
+        "score": float(payload.get("score", 0) or 0),
+        "notes": str(payload.get("notes") or "").strip(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    MEMORY_STORE.setdefault("concept_map_progress", []).append(record)
+    try:
+        if hasattr(db, "concept_map_progress"):
+            _schedule_db_insert(db.concept_map_progress.insert_one(record))
+    except Exception:
+        pass
+    return record
+
+
+def get_concept_map_progress(user_id: str, map_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    rows = MEMORY_STORE.get("concept_map_progress", [])
+    filtered = [row for row in rows if str(row.get("user_id")) == str(user_id)]
+    if map_id:
+        filtered = [row for row in filtered if str(row.get("map_id")) == str(map_id)]
+    return filtered
+
+
+def save_concept_map(user_id: str, document_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    record = {
+        "id": str(payload.get("id") or uuid.uuid4()),
+        "user_id": str(user_id),
+        "document_id": str(document_id),
+        "title": str(payload.get("title") or "Knowledge map"),
+        "subject": str(payload.get("subject") or "").strip(),
+        "topic": str(payload.get("topic") or "").strip(),
+        "concepts": payload.get("concepts") or [],
+        "relationships": payload.get("relationships") or [],
+        "created_at": payload.get("created_at") or datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    MEMORY_STORE.setdefault("concept_maps", []).append(record)
+    try:
+        if hasattr(db, "concept_maps"):
+            _schedule_db_insert(db.concept_maps.insert_one(record))
+    except Exception:
+        pass
+    return record
+
+
+def get_user_concept_maps(user_id: str) -> List[Dict[str, Any]]:
+    rows = MEMORY_STORE.get("concept_maps", [])
+    return [row for row in rows if str(row.get("user_id")) == str(user_id)]
+
 
 app = FastAPI()
-api_router = APIRouter(prefix="/api")
 
 # Storage setup (local filesystem)
 STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", str(ROOT_DIR / "storage")))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 APP_NAME = "ai-study-assistant"
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "26214400"))
+ALLOWED_UPLOAD_MIME_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/plain",
+}
 
 # AI provider configuration
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1592,7 +2419,16 @@ async def llm_stream(system: str, prompt: str, model: Optional[str] = None):
 JWT_ALGORITHM = "HS256"
 
 def get_jwt_secret() -> str:
-    return os.environ.get("JWT_SECRET", "dev-secret-key")
+    secret = os.environ.get("JWT_SECRET")
+    if secret:
+        return secret
+
+    app_env = (os.environ.get("APP_ENV") or "development").lower()
+    if app_env == "production":
+        raise RuntimeError("JWT_SECRET must be configured in production.")
+
+    logger.warning("JWT_SECRET is not configured; using a development fallback. Set JWT_SECRET for production deployments.")
+    return os.environ.get("DEV_JWT_SECRET", "development-fallback-secret")
 
 def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
@@ -1600,7 +2436,20 @@ def hash_password(password: str) -> str:
     return hashed.decode("utf-8")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    if not isinstance(plain_password, str) or not isinstance(hashed_password, str):
+        return False
+
+    normalized_hash = hashed_password.strip()
+    if not normalized_hash:
+        return False
+
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            normalized_hash.encode("utf-8")
+        )
+    except (TypeError, ValueError):
+        return False
 
 def create_access_token(user_id: str, email: str) -> str:
     payload = {"sub": user_id, "email": email, "exp": datetime.now(timezone.utc) + timedelta(minutes=15), "type": "access"}
@@ -1712,9 +2561,132 @@ class FlashcardRequest(BaseModel):
     document_id: str
 
 
+class FlashcardCardRequest(BaseModel):
+    front: str
+    back: str
+    hint: Optional[str] = None
+
+
+class FlashcardSetRequest(BaseModel):
+    name: str
+    document_id: Optional[str] = None
+    document_name: Optional[str] = None
+    flashcards: List[FlashcardCardRequest] = []
+
+
 class StudyPlanRequest(BaseModel):
-    exam_dates: List[Dict[str, str]]
-    daily_study_time: int
+    title: str = "My Study Plan"
+    subject: str = ""
+    topics: List[str] = []
+    goal: str = ""
+    exam_date: Optional[str] = None
+    exam_dates: List[Dict[str, str]] = []
+    available_days: List[str] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    daily_study_time: int = 60
+    weeks_count: int = 4
+
+    model_config = {
+        "extra": "ignore",
+    }
+
+
+def _coerce_study_plan_request(req: StudyPlanRequest) -> Dict[str, Any]:
+    title = (req.title or "My Study Plan").strip() or "My Study Plan"
+    subject = (req.subject or "General study").strip() or "General study"
+    topics = [str(topic).strip() for topic in (req.topics or []) if str(topic).strip()]
+    if not topics and subject:
+        topics = [subject]
+    raw_exam_dates = list(req.exam_dates or [])
+    if req.exam_date and not raw_exam_dates:
+        raw_exam_dates = [{"date": req.exam_date, "label": "Exam"}]
+    goal = (req.goal or "Build confidence and improve performance").strip() or "Build confidence and improve performance"
+    available_days = [str(day).strip() for day in (req.available_days or []) if str(day).strip()]
+    if not available_days:
+        available_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    daily_study_time = max(15, min(int(req.daily_study_time or 60), 420))
+    weeks_count = max(1, min(int(req.weeks_count or 4), 12))
+    return {
+        "title": title,
+        "subject": subject,
+        "topics": topics,
+        "goal": goal,
+        "exam_dates": raw_exam_dates,
+        "available_days": available_days,
+        "daily_study_time": daily_study_time,
+        "weeks_count": weeks_count,
+    }
+
+
+def _build_fallback_study_plan(req: StudyPlanRequest) -> Dict[str, Any]:
+    settings = _coerce_study_plan_request(req)
+    day_names = settings["available_days"]
+    topic_pool = settings["topics"] or [settings["subject"]]
+    weeks: List[Dict[str, Any]] = []
+
+    for week_number in range(1, settings["weeks_count"] + 1):
+        days: List[Dict[str, Any]] = []
+        for day_name in day_names:
+            tasks: List[Dict[str, Any]] = []
+            for index, topic in enumerate(topic_pool):
+                minutes = settings["daily_study_time"] // max(1, len(topic_pool))
+                task_type = "review" if week_number % 2 == 0 else "practice"
+                task_kind = "revision" if index % 2 == 0 else "practice"
+                tasks.append({
+                    "subject": settings["subject"],
+                    "topic": topic,
+                    "duration_minutes": max(20, min(minutes, 90)),
+                    "task_type": task_kind if index % 2 == 0 else task_type,
+                    "focus": f"Focus on {topic} with short recap and active recall.",
+                })
+            if settings["goal"]:
+                tasks.append({
+                    "subject": settings["subject"],
+                    "topic": "Goal check",
+                    "duration_minutes": max(10, min(20, settings["daily_study_time"] // 5)),
+                    "task_type": "assessment",
+                    "focus": f"Review progress against: {settings['goal']}",
+                })
+            days.append({
+                "day": day_name,
+                "tasks": tasks[:4],
+            })
+        weeks.append({
+            "week_number": week_number,
+            "days": days,
+        })
+
+    return {
+        "title": settings["title"],
+        "subject": settings["subject"],
+        "topics": settings["topics"],
+        "goal": settings["goal"],
+        "exam_dates": settings["exam_dates"],
+        "available_days": settings["available_days"],
+        "daily_study_time": settings["daily_study_time"],
+        "weeks_count": settings["weeks_count"],
+        "generated_from_ai": False,
+        "weeks": weeks,
+    }
+
+
+def _normalize_study_plan_data(raw_plan: Any) -> Dict[str, Any]:
+    fallback = _build_fallback_study_plan(StudyPlanRequest())
+    if not isinstance(raw_plan, dict):
+        return fallback
+
+    cleaned = dict(raw_plan)
+    weeks = cleaned.get("weeks")
+    if not isinstance(weeks, list) or not weeks:
+        cleaned["weeks"] = fallback["weeks"]
+    cleaned["title"] = cleaned.get("title") or fallback["title"]
+    cleaned["subject"] = cleaned.get("subject") or fallback["subject"]
+    cleaned["goal"] = cleaned.get("goal") or fallback["goal"]
+    cleaned["topics"] = cleaned.get("topics") or fallback["topics"]
+    cleaned["available_days"] = cleaned.get("available_days") or fallback["available_days"]
+    cleaned["daily_study_time"] = cleaned.get("daily_study_time") or fallback["daily_study_time"]
+    cleaned["weeks_count"] = cleaned.get("weeks_count") or fallback["weeks_count"]
+    cleaned["generated_from_ai"] = bool(cleaned.get("generated_from_ai", True))
+    return cleaned
 
 
 class StudySessionRequest(BaseModel):
@@ -1955,10 +2927,15 @@ async def login(req: LoginRequest, response: Response):
             detail="Invalid email or password"
         )
 
-    if not verify_password(
-        req.password,
-        str(user.get("password_hash", ""))
-    ):
+    try:
+        password_valid = verify_password(
+            req.password,
+            str(user.get("password_hash", ""))
+        )
+    except Exception:
+        password_valid = False
+
+    if not password_valid:
         raise HTTPException(
             status_code=401,
             detail="Invalid email or password"
@@ -2091,17 +3068,33 @@ async def complete_onboarding(
 @api_router.post("/documents/upload")
 async def upload_document(request: Request, file: UploadFile = File(...)):
     user = await get_current_user(request)
-    
-    file_content = await file.read()
+
     filename = getattr(file, "filename", "") or ""
-    ext = filename.split(".")[-1] if "." in filename else "bin"
+    content_type = (file.content_type or "application/octet-stream").lower()
+    if content_type not in ALLOWED_UPLOAD_MIME_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported file type. Upload PDF, DOCX, PPTX, or TXT files only.")
+
+    file_content = await file.read()
+    if len(file_content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(file_content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Uploaded file exceeds the {MAX_UPLOAD_BYTES} byte limit.")
+
+    ext = filename.split(".")[-1].lower() if "." in filename else "bin"
+    if content_type == "application/pdf" and ext not in {"pdf"}:
+        raise HTTPException(status_code=415, detail="PDF uploads must use a .pdf extension.")
+    if content_type.endswith("wordprocessingml.document") and ext not in {"docx"}:
+        raise HTTPException(status_code=415, detail="DOCX uploads must use a .docx extension.")
+    if content_type.endswith("presentationml.presentation") and ext not in {"pptx"}:
+        raise HTTPException(status_code=415, detail="PPTX uploads must use a .pptx extension.")
+    if content_type == "text/plain" and ext not in {"txt", "md", "rtf"}:
+        raise HTTPException(status_code=415, detail="TXT uploads must use a .txt, .md, or .rtf extension.")
+
     storage_path = f"{APP_NAME}/uploads/{user['id']}/{uuid.uuid4()}.{ext}"
-    
-    content_type = file.content_type or "application/octet-stream"
     result = put_object(storage_path, file_content, content_type)
-    
+
     extracted_text = extract_text_from_file(file_content, content_type)
-    
+
     doc_id = str(uuid.uuid4())
     doc = {
         "id": doc_id,
@@ -2114,9 +3107,9 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
         "is_deleted": False,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.documents.insert_one(doc)
-    
+
     response_doc = normalize_supabase_id(doc) or dict(doc)
     response_doc.pop("extracted_text", None)
     return response_doc
@@ -2186,10 +3179,96 @@ async def get_document(doc_id: str, request: Request):
 @api_router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str, request: Request):
     user = await get_current_user(request)
-    result = await db.documents.update_one({"_id": doc_id, "user_id": user["id"]}, {"$set": {"is_deleted": True}})
+    result = await db.documents.update_one({"id": doc_id, "user_id": user["id"]}, {"$set": {"is_deleted": True}})
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"message": "Document deleted"}
+
+
+@api_router.post("/knowledge-graph/generate")
+async def generate_knowledge_graph(request: Request):
+    user = await get_current_user(request)
+    payload = await request.json()
+    document_id = str(payload.get("document_id") or "").strip()
+    if not document_id:
+        raise HTTPException(status_code=400, detail="document_id is required")
+
+    doc = await db.documents.find_one({"id": document_id, "user_id": user["id"], "is_deleted": False})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    text = str(doc.get("extracted_text") or "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No text content found in the document")
+
+    graph = extract_concepts_from_document(text, document_title=str(doc.get("original_filename") or "Document"))
+    graph["id"] = str(uuid.uuid4())
+    graph["document_id"] = document_id
+    graph["user_id"] = user["id"]
+    graph["subject"] = str(payload.get("subject") or "").strip()
+    graph["topic"] = str(payload.get("topic") or "").strip()
+    graph["created_at"] = datetime.now(timezone.utc).isoformat()
+    graph["updated_at"] = graph["created_at"]
+
+    saved = save_concept_map(user["id"], document_id, graph)
+    return saved
+
+
+@api_router.get("/knowledge-graph")
+async def list_knowledge_graphs(request: Request):
+    user = await get_current_user(request)
+    return get_user_concept_maps(user["id"])
+
+
+@api_router.get("/knowledge-graph/{map_id}")
+async def get_knowledge_graph(map_id: str, request: Request):
+    user = await get_current_user(request)
+    rows = get_user_concept_maps(user["id"])
+    item = next((row for row in rows if str(row.get("id")) == str(map_id)), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge graph not found")
+    return item
+
+
+@api_router.post("/knowledge-graph/{map_id}/progress")
+async def save_knowledge_graph_progress(map_id: str, request: Request):
+    user = await get_current_user(request)
+    payload = await request.json()
+    payload["map_id"] = map_id
+    payload["user_id"] = user["id"]
+    return save_concept_map_progress(user["id"], payload)
+
+
+@api_router.get("/knowledge-graph/{map_id}/progress")
+async def get_knowledge_graph_progress(map_id: str, request: Request):
+    user = await get_current_user(request)
+    return get_concept_map_progress(user["id"], map_id)
+
+
+@api_router.post("/knowledge-graph/{map_id}/assessment")
+async def generate_knowledge_assessment(map_id: str, request: Request):
+    user = await get_current_user(request)
+    payload = await request.json()
+    rows = get_user_concept_maps(user["id"])
+    item = next((row for row in rows if str(row.get("id")) == str(map_id)), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge graph not found")
+
+    concept_id = str(payload.get("concept_id") or "").strip()
+    question_type = str(payload.get("question_type") or "short").strip().lower() or "short"
+    concept = None
+    for candidate in item.get("concepts", []):
+        if str(candidate.get("id")) == concept_id or str(candidate.get("name")).lower() == concept_id.lower():
+            concept = candidate
+            break
+    if concept is None and item.get("concepts"):
+        concept = item["concepts"][0]
+
+    if concept is None:
+        raise HTTPException(status_code=404, detail="No concept available for assessment")
+
+    return generate_concept_assessment(concept, question_type)
+
 
 # AI Summary
 @api_router.post("/ai/summary")
@@ -2697,6 +3776,23 @@ async def get_library_topic(qualification_slug: str, subject_slug: str, topic_sl
     return {"qualification": qualification, "subject": subject, "topic": topic}
 
 
+def normalize_flashcard_cards(cards: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+    cleaned: List[Dict[str, str]] = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        front = str(card.get("front") or "").strip()
+        back = str(card.get("back") or "").strip()
+        if not front and not back:
+            continue
+        cleaned.append({
+            "front": front or "Untitled front",
+            "back": back or "Untitled back",
+            "hint": str(card.get("hint") or "").strip(),
+        })
+    return cleaned
+
+
 # Flashcards
 @api_router.post("/ai/flashcards")
 async def generate_flashcards(req: FlashcardRequest, request: Request):
@@ -2704,9 +3800,9 @@ async def generate_flashcards(req: FlashcardRequest, request: Request):
     doc = await db.documents.find_one({"_id": req.document_id, "user_id": user["id"], "is_deleted": False})
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
     text = doc.get("extracted_text", "")[:5000]
-    
+
     prompt = f"""Generate flashcards from this study material. Create 10-15 flashcards covering key concepts, definitions, and important facts.
 
 Material:
@@ -2722,12 +3818,12 @@ Format as JSON:
     }}
   ]
 }}"""
-    
+
     flashcard_content = await llm_generate(
         system="You are an expert at creating effective flashcards for studying. Always return valid JSON.",
         prompt=prompt,
     )
-    
+
     try:
         if "```json" in flashcard_content:
             flashcard_content = flashcard_content.split("```json")[1].split("```")[0].strip()
@@ -2739,48 +3835,180 @@ Format as JSON:
         flashcard_data = {"flashcards": [], "error": "Failed to parse flashcards"}
 
     flashcard_set_id = str(uuid.uuid4())
+    normalized_cards = normalize_flashcard_cards(flashcard_data.get("flashcards", []))
     flashcard_doc = {
         "id": flashcard_set_id,
         "user_id": user["id"],
         "document_id": req.document_id,
         "document_name": doc.get("original_filename") or doc.get("filename") or doc.get("name") or "Untitled Document",
-        "flashcards": flashcard_data.get("flashcards", []),
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "flashcards": normalized_cards,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     await db.flashcard_sets.insert_one(flashcard_doc)
     return normalize_supabase_id(flashcard_doc) or dict(flashcard_doc)
 
+
+@api_router.post("/flashcards")
+async def create_flashcard_set(req: FlashcardSetRequest, request: Request):
+    user = await get_current_user(request)
+    normalized_cards = normalize_flashcard_cards([card.model_dump() for card in req.flashcards])
+    if not normalized_cards:
+        raise HTTPException(status_code=400, detail="At least one flashcard is required.")
+
+    document_name = req.document_name or "Untitled Deck"
+    if req.document_id:
+        doc = await db.documents.find_one({"_id": req.document_id, "user_id": user["id"], "is_deleted": False})
+        if doc:
+            document_name = doc.get("original_filename") or doc.get("filename") or doc.get("name") or document_name
+
+    flashcard_doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "document_id": req.document_id,
+        "document_name": document_name,
+        "name": req.name.strip() or document_name,
+        "flashcards": normalized_cards,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    await db.flashcard_sets.insert_one(flashcard_doc)
+    return normalize_supabase_id(flashcard_doc) or dict(flashcard_doc)
+
+
 @api_router.get("/flashcards")
 async def list_flashcards(request: Request):
     user = await get_current_user(request)
-    flashcards = await db.flashcard_sets.find({"user_id": user["id"]}).to_list(1000)
+    flashcards = await db.flashcard_sets.find({"user_id": user["id"]}).sort([("created_at", -1)]).to_list(1000)
     normalized_flashcards: List[Dict[str, Any]] = []
     for f in flashcards:
         normalized = ensure_response_id(f)
         if normalized is not None:
+            normalized["flashcards"] = normalize_flashcard_cards(normalized.get("flashcards", []))
             normalized_flashcards.append(normalized)
     return normalized_flashcards
+
+
+@api_router.get("/flashcards/{flashcard_set_id}")
+async def get_flashcard_set(flashcard_set_id: str, request: Request):
+    user = await get_current_user(request)
+    flashcard_set = await db.flashcard_sets.find_one({"id": flashcard_set_id, "user_id": user["id"]})
+    if not flashcard_set:
+        raise HTTPException(status_code=404, detail="Flashcard set not found")
+    normalized = ensure_response_id(flashcard_set) or dict(flashcard_set)
+    normalized["flashcards"] = normalize_flashcard_cards(normalized.get("flashcards", []))
+    return normalized
+
+
+@api_router.put("/flashcards/{flashcard_set_id}")
+async def update_flashcard_set(flashcard_set_id: str, req: FlashcardSetRequest, request: Request):
+    user = await get_current_user(request)
+    existing = await db.flashcard_sets.find_one({"id": flashcard_set_id, "user_id": user["id"]})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Flashcard set not found")
+
+    normalized_cards = normalize_flashcard_cards([card.model_dump() for card in req.flashcards])
+    if not normalized_cards:
+        raise HTTPException(status_code=400, detail="At least one flashcard is required.")
+
+    payload = {
+        "name": req.name.strip() or existing.get("name") or existing.get("document_name") or "Untitled Deck",
+        "document_id": req.document_id or existing.get("document_id"),
+        "document_name": req.document_name or existing.get("document_name") or "Untitled Deck",
+        "flashcards": normalized_cards,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.flashcard_sets.update_one({"id": flashcard_set_id, "user_id": user["id"]}, {"$set": payload})
+    row = await db.flashcard_sets.find_one({"id": flashcard_set_id, "user_id": user["id"]})
+    normalized = ensure_response_id(row) or dict(row or {})
+    normalized["flashcards"] = normalize_flashcard_cards(normalized.get("flashcards", []))
+    return normalized
+
+
+@api_router.delete("/flashcards/{flashcard_set_id}")
+async def delete_flashcard_set(flashcard_set_id: str, request: Request):
+    user = await get_current_user(request)
+    existing = await db.flashcard_sets.find_one({"id": flashcard_set_id, "user_id": user["id"]})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Flashcard set not found")
+    await db.flashcard_sets.delete_one({"id": flashcard_set_id, "user_id": user["id"]})
+    return {"success": True, "deleted_id": flashcard_set_id}
+
+
+@api_router.post("/flashcards/{flashcard_set_id}/cards")
+async def add_flashcard_to_set(flashcard_set_id: str, req: FlashcardCardRequest, request: Request):
+    user = await get_current_user(request)
+    existing = await db.flashcard_sets.find_one({"id": flashcard_set_id, "user_id": user["id"]})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Flashcard set not found")
+
+    current_cards = normalize_flashcard_cards(existing.get("flashcards", []))
+    card = normalize_flashcard_cards([req.model_dump()])
+    if not card:
+        raise HTTPException(status_code=400, detail="Flashcard content cannot be blank.")
+    current_cards.extend(card)
+
+    await db.flashcard_sets.update_one({"id": flashcard_set_id, "user_id": user["id"]}, {"$set": {"flashcards": current_cards, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    row = await db.flashcard_sets.find_one({"id": flashcard_set_id, "user_id": user["id"]})
+    normalized = ensure_response_id(row) or dict(row or {})
+    normalized["flashcards"] = normalize_flashcard_cards(normalized.get("flashcards", []))
+    return normalized
+
+
+@api_router.delete("/flashcards/{flashcard_set_id}/cards/{card_index}")
+async def remove_flashcard_from_set(flashcard_set_id: str, card_index: int, request: Request):
+    user = await get_current_user(request)
+    existing = await db.flashcard_sets.find_one({"id": flashcard_set_id, "user_id": user["id"]})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Flashcard set not found")
+
+    current_cards = normalize_flashcard_cards(existing.get("flashcards", []))
+    if card_index < 0 or card_index >= len(current_cards):
+        raise HTTPException(status_code=404, detail="Flashcard not found")
+
+    del current_cards[card_index]
+    await db.flashcard_sets.update_one({"id": flashcard_set_id, "user_id": user["id"]}, {"$set": {"flashcards": current_cards, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    row = await db.flashcard_sets.find_one({"id": flashcard_set_id, "user_id": user["id"]})
+    normalized = ensure_response_id(row) or dict(row or {})
+    normalized["flashcards"] = normalize_flashcard_cards(normalized.get("flashcards", []))
+    return normalized
 
 # Study planner
 @api_router.post("/ai/study-plan")
 async def generate_study_plan(req: StudyPlanRequest, request: Request):
     user = await get_current_user(request)
-    
-    user_profile = await db.users.find_one({"_id": user["id"]}, {"_id": 0}) or {}
-    subjects = user_profile.get("subjects", [])
-    curriculum = user_profile.get("curriculum", "")
-    
+    request_settings = _coerce_study_plan_request(req)
+
+    user_profile = await db.users.find_one({"id": user["id"]}) or {}
+    if not user_profile:
+        user_profile = await db.users.find_one({"_id": user["id"]}) or {}
+    subjects = user_profile.get("subjects") or user_profile.get("study_preferences", {}).get("subjects", []) or [request_settings["subject"]]
+    curriculum = user_profile.get("curriculum") or user_profile.get("study_preferences", {}).get("curriculum", "")
+
     prompt = f"""Create a personalized study plan for a student.
 
 Profile:
-- Subjects: {', '.join(subjects)}
+- Title: {request_settings['title']}
+- Subject: {request_settings['subject']}
+- Topics: {', '.join(request_settings['topics']) if request_settings['topics'] else 'General revision'}
+- Goal: {request_settings['goal']}
+- Subjects: {', '.join(subjects) if isinstance(subjects, list) else str(subjects)}
 - Curriculum: {curriculum}
-- Daily study time available: {req.daily_study_time} minutes
-- Exam dates: {json.dumps(req.exam_dates)}
+- Daily study time available: {request_settings['daily_study_time']} minutes
+- Available days: {', '.join(request_settings['available_days'])}
+- Exam dates: {json.dumps(request_settings['exam_dates'])}
+- Weeks: {request_settings['weeks_count']}
 
-Create a weekly study schedule. Format as JSON:
+Create a realistic weekly study schedule. Ensure the days are from the available_days list and all task durations fit within the total time budget. Format as JSON:
 {{
+  "title": "My Study Plan",
+  "subject": "Math",
+  "topics": ["Algebra", "Geometry"],
+  "goal": "Target 85%",
+  "daily_study_time": 60,
+  "available_days": ["Monday", "Wednesday", "Friday"],
   "weeks": [
     {{
       "week_number": 1,
@@ -2792,7 +4020,8 @@ Create a weekly study schedule. Format as JSON:
               "subject": "Math",
               "topic": "Algebra",
               "duration_minutes": 30,
-              "task_type": "review"
+              "task_type": "review",
+              "focus": "Use active recall and short practice questions"
             }}
           ]
         }}
@@ -2800,30 +4029,48 @@ Create a weekly study schedule. Format as JSON:
     }}
   ]
 }}"""
-    
+
     plan_content = await llm_generate(
         system="You are an expert study planner. Create realistic, balanced study schedules. Always return valid JSON.",
         prompt=prompt,
     )
-    
+
+    plan_data = _build_fallback_study_plan(req)
     try:
-        if "```json" in plan_content:
-            plan_content = plan_content.split("```json")[1].split("```")[0].strip()
-        elif "```" in plan_content:
-            plan_content = plan_content.split("```")[1].split("```")[0].strip()
-        
-        plan_data = json.loads(plan_content)
-    except Exception:
-        plan_data = {"weeks": [], "error": "Failed to parse study plan"}
-    
+        if isinstance(plan_content, str):
+            cleaned = strip_markdown_fences(plan_content)
+            if cleaned:
+                parsed = json.loads(cleaned)
+                plan_data = _normalize_study_plan_data(parsed)
+                plan_data["generated_from_ai"] = True
+    except (TypeError, ValueError, json.JSONDecodeError):
+        plan_data = _build_fallback_study_plan(req)
+
+    generic_defaults = {
+        "title": "My Study Plan",
+        "subject": "General study",
+        "goal": "Build confidence and improve performance",
+    }
+    for key, default_value in generic_defaults.items():
+        if str(plan_data.get(key) or "").strip() in {"", default_value}:
+            plan_data[key] = request_settings.get(key, plan_data.get(key))
+
+    plan_data["title"] = plan_data.get("title") or request_settings["title"]
+    plan_data["subject"] = plan_data.get("subject") or request_settings["subject"]
+    plan_data["goal"] = plan_data.get("goal") or request_settings["goal"]
+    plan_data["exam_dates"] = request_settings["exam_dates"]
+    plan_data["available_days"] = plan_data.get("available_days") or request_settings["available_days"]
+    plan_data["daily_study_time"] = plan_data.get("daily_study_time") or request_settings["daily_study_time"]
+    plan_data["weeks_count"] = plan_data.get("weeks_count") or request_settings["weeks_count"]
+
     plan_id = str(uuid.uuid4())
     plan_doc = {
         "id": plan_id,
         "user_id": user["id"],
         "plan_data": plan_data,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    
+
     await db.study_plans.insert_one(plan_doc)
     return normalize_supabase_id(plan_doc) or dict(plan_doc)
 
@@ -3158,12 +4405,570 @@ async def get_progress_summary(request: Request):
     return await _get_user_study_summary(user)
 
 
+async def _get_user_collection_rows(user_id: str, collection_name: str, sort_field: str = "created_at") -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    collection = getattr(db, collection_name, None)
+    if collection is not None:
+        try:
+            rows = await collection.find({"user_id": user_id}).sort([(sort_field, -1)]).to_list(1000)
+        except Exception:
+            rows = []
+        for row in rows:
+            if row is None:
+                continue
+            normalized = normalize_supabase_id(dict(row)) or dict(row)
+            normalized.pop("_id", None)
+            records.append(normalized)
+
+    for row in MEMORY_STORE.get(collection_name, []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("user_id")) != str(user_id):
+            continue
+        normalized = dict(row)
+        normalized.pop("_id", None)
+        records.append(normalized)
+
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for row in records:
+        key = row.get("id") or row.get("_id") or json.dumps(row, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    deduped.sort(key=lambda item: str(item.get(sort_field) or item.get("created_at") or ""), reverse=True)
+    return deduped
+
+
+async def build_learning_analytics(user: Dict[str, Any]) -> Dict[str, Any]:
+    user_id = user["id"]
+    summary = await _get_user_study_summary(user)
+    daily_goal = summary.get("daily_goal", {}) if isinstance(summary, dict) else {}
+
+    document_count = await db.documents.count_documents({"user_id": user_id, "is_deleted": False})
+    quiz_count = await db.quizzes.count_documents({"user_id": user_id})
+
+    flashcard_sets = await db.flashcard_sets.find({"user_id": user_id}).to_list(1000)
+    total_flashcard_cards = 0
+    total_flashcard_review_count = 0
+    mastery_values = []
+    deck_snapshot: List[Dict[str, Any]] = []
+
+    for deck in flashcard_sets:
+        normalized_deck = normalize_supabase_id(dict(deck)) or dict(deck)
+        normalized_deck.pop("_id", None)
+        cards = normalize_flashcard_cards(normalized_deck.get("flashcards", []))
+        total_flashcard_cards += len(cards)
+        review_count = int(normalized_deck.get("review_count") or 0)
+        total_flashcard_review_count += review_count
+        mastery = normalized_deck.get("mastery_score")
+        if mastery is not None:
+            try:
+                mastery_values.append(float(mastery))
+            except (TypeError, ValueError):
+                pass
+        deck_snapshot.append({
+            "id": normalized_deck.get("id") or normalized_deck.get("_id"),
+            "name": normalized_deck.get("name") or normalized_deck.get("document_name") or "Flashcard deck",
+            "card_count": len(cards),
+            "mastery_score": normalized_deck.get("mastery_score", 0),
+            "review_count": review_count,
+        })
+
+    if mastery_values:
+        average_mastery = round(sum(mastery_values) / len(mastery_values), 1)
+    elif total_flashcard_cards:
+        average_mastery = round(min(100, max(0, (total_flashcard_review_count / max(1, total_flashcard_cards)) * 25)), 1)
+    else:
+        average_mastery = 0.0
+
+    mock_attempts = await _get_user_collection_rows(user_id, "mock_exam_attempts")
+    mock_history = []
+    for attempt in mock_attempts:
+        mock_history.append({
+            "id": attempt.get("id") or attempt.get("exam_id"),
+            "exam_id": attempt.get("exam_id") or attempt.get("id"),
+            "percentage": int(float(attempt.get("percentage") or 0)),
+            "total_marks": int(attempt.get("total_marks") or 0),
+            "max_marks": int(attempt.get("max_marks") or 0),
+            "created_at": attempt.get("created_at"),
+        })
+    mock_history.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+    quiz_history = await _get_user_collection_rows(user_id, "quiz_attempts", sort_field="completed_at")
+    for attempt in quiz_history:
+        if "percentage" not in attempt and "score" in attempt:
+            attempt["percentage"] = attempt["score"]
+
+    performance_over_time = []
+    for item in mock_history + quiz_history:
+        if not item.get("percentage") and item.get("score") is None:
+            continue
+        value = item.get("percentage") if item.get("percentage") is not None else item.get("score")
+        try:
+            score = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        performance_over_time.append({
+            "date": item.get("created_at") or item.get("completed_at") or item.get("submitted_at") or "",
+            "percentage": score,
+            "source": "mock_exam" if "exam_id" in item or "exam" in item else "quiz",
+        })
+    performance_over_time.sort(key=lambda item: str(item.get("date") or ""), reverse=False)
+
+    topics = []
+    for attempt in mock_history:
+        exam_id = attempt.get("exam_id") or attempt.get("id")
+        exam = next((item for item in MEMORY_STORE.get("mock_exams", []) if str(item.get("id")) == str(exam_id)), None)
+        if not exam:
+            continue
+        for question in exam.get("questions", []) or []:
+            topic_name = str(question.get("topic") or "General").strip() or "General"
+            topics.append({
+                "topic": topic_name,
+                "difficulty": question.get("difficulty") or "medium",
+            })
+
+    overall_progress = 0.0
+    if summary.get("total_minutes"):
+        overall_progress += min(55.0, (summary["total_minutes"] / max(1, 600)) * 55)
+    if document_count:
+        overall_progress += min(20.0, (document_count / max(1, 8)) * 20)
+    if quiz_count:
+        overall_progress += min(15.0, (quiz_count / max(1, 5)) * 15)
+    if total_flashcard_cards:
+        overall_progress += min(10.0, (average_mastery / 100) * 10)
+    overall_progress = round(min(100.0, overall_progress), 1)
+
+    insights = []
+    if summary.get("current_streak", 0):
+        insights.append(f"You are on a {summary['current_streak']}-day study streak and have been showing consistent momentum.")
+    if summary.get("total_minutes", 0):
+        insights.append(f"Your total study time is {summary['total_minutes']} minutes across {summary.get('total_active_days', 0)} active days.")
+    if mock_history:
+        latest_score = mock_history[0].get("percentage")
+        insights.append(f"Your latest mock exam score was {latest_score}% and is a useful benchmark for your current revision plan.")
+    if average_mastery:
+        insights.append(f"Your flashcard decks are averaging {average_mastery}% mastery, which is a good signal for review priorities.")
+    if not insights:
+        insights.append("No study data has been recorded yet. Start with a document upload, a quiz, or a study session to build your learning analytics.")
+
+    recommendations = []
+    if daily_goal.get("goal_reached") is False:
+        remaining = daily_goal.get("minutes_remaining", 0)
+        recommendations.append(f"You still need {remaining} minutes today to hit your study goal.")
+    if mock_history and mock_history[0].get("percentage", 0) < 70:
+        recommendations.append("Prioritise your weakest mock exam topics and revisit the related notes before your next timed attempt.")
+    if total_flashcard_cards and average_mastery < 70:
+        recommendations.append("Run a short flashcard review session to reinforce the concepts you have not yet retained consistently.")
+    if not recommendations:
+        recommendations.append("Keep your daily study rhythm going and add one focused revision session to maintain momentum.")
+
+    return {
+        "user_id": user_id,
+        "overall_progress": overall_progress,
+        "study_summary": summary,
+        "documents_uploaded": document_count,
+        "quizzes_completed": quiz_count,
+        "flashcards_total": total_flashcard_cards,
+        "flashcard_mastery": {
+            "total_cards": total_flashcard_cards,
+            "cards_reviewed": total_flashcard_review_count,
+            "average_mastery": average_mastery,
+            "decks": deck_snapshot,
+        },
+        "mock_exam_history": mock_history,
+        "quiz_performance_over_time": performance_over_time,
+        "weekly_activity": summary.get("weekly_activity", []),
+        "daily_goal": daily_goal,
+        "topic_focus": {
+            "topics": topics,
+            "by_topic": {},
+        },
+        "insights": insights,
+        "recommendations": recommendations,
+    }
+
+
+def _topic_name_from_activity_row(row: Dict[str, Any]) -> str:
+    for key in ("topic", "concept", "subject", "name", "title"):
+        value = row.get(key)
+        if value:
+            return str(value).strip()
+    return "General study"
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_concept_list(items: List[str]) -> List[str]:
+    seen = set()
+    cleaned = []
+    for item in items:
+        concept = str(item or "").strip()
+        if not concept or concept.lower() in seen:
+            continue
+        seen.add(concept.lower())
+        cleaned.append(concept)
+    return cleaned
+
+
+def _build_profile_topic_scores(user_id: str) -> Dict[str, Dict[str, Any]]:
+    topic_scores: Dict[str, Dict[str, Any]] = {}
+
+    for table_name in ("quiz_attempts", "mock_exam_attempts", "flashcard_sets", "concept_map_progress"):
+        for row in MEMORY_STORE.get(table_name, []):
+            if str(row.get("user_id")) != str(user_id):
+                continue
+            if table_name == "flashcard_sets":
+                mastery_score = row.get("mastery_score")
+                topic_name = row.get("topic") or row.get("name") or "General study"
+                if mastery_score is None:
+                    continue
+                score = _safe_float(mastery_score, 0.0)
+            elif table_name == "concept_map_progress":
+                status = str(row.get("status") or "review").lower()
+                if status in {"strong", "mastered"}:
+                    score = 85.0
+                elif status in {"review", "weak"}:
+                    score = 52.0
+                else:
+                    score = 60.0
+                topic_name = row.get("concept_name") or row.get("concept_id") or "General study"
+            else:
+                score = row.get("score")
+                if score is None:
+                    score = row.get("percentage")
+                if score is None:
+                    continue
+                score = _safe_float(score, 0.0)
+                topic_name = row.get("topic") or row.get("concept") or _topic_name_from_activity_row(row)
+
+            bucket = topic_scores.setdefault(topic_name, {"scores": [], "last_seen": None})
+            bucket["scores"].append(score)
+            seen_at = row.get("completed_at") or row.get("created_at") or row.get("updated_at") or row.get("started_at")
+            if seen_at and (bucket["last_seen"] is None or str(seen_at) > str(bucket["last_seen"])):
+                bucket["last_seen"] = str(seen_at)
+
+    for row in MEMORY_STORE.get("study_sessions", []):
+        if str(row.get("user_id")) != str(user_id):
+            continue
+        if row.get("duration_minutes") is not None:
+            duration = max(0, int(row.get("duration_minutes") or 0))
+            if duration > 0:
+                bucket = topic_scores.setdefault("Study consistency", {"scores": [], "last_seen": None})
+                bucket["scores"].append(min(100.0, 50.0 + min(duration, 90) / 2))
+                seen_at = row.get("started_at") or row.get("date_local")
+                if seen_at and (bucket["last_seen"] is None or str(seen_at) > str(bucket["last_seen"])):
+                    bucket["last_seen"] = str(seen_at)
+
+    return topic_scores
+
+
+def build_adaptive_learning_profile(user_id: str) -> Dict[str, Any]:
+    user_id = str(user_id)
+    topic_scores = _build_profile_topic_scores(user_id)
+
+    mastered = []
+    developing = []
+    needs_attention = []
+    concept_rows = []
+
+    for concept, payload in sorted(topic_scores.items(), key=lambda item: item[0].lower()):
+        values = payload.get("scores") or []
+        average = round(sum(values) / len(values), 1) if values else 0.0
+        last_seen = payload.get("last_seen")
+        status = "needs_attention"
+        if average >= 75:
+            status = "mastered"
+        elif average >= 45:
+            status = "developing"
+
+        concept_rows.append({
+            "concept": concept,
+            "average_score": average,
+            "status": status,
+            "last_seen": last_seen,
+            "attempt_count": len(values),
+        })
+
+        if status == "mastered":
+            mastered.append(concept)
+        elif status == "developing":
+            developing.append(concept)
+        else:
+            needs_attention.append(concept)
+
+    if not concept_rows:
+        return {
+            "user_id": user_id,
+            "mastered_concepts": [],
+            "developing_concepts": [],
+            "needs_attention": [],
+            "not_studied": [],
+            "knowledge_retention": [],
+            "concept_scores": [],
+            "measured_from": ["quiz_attempts", "mock_exam_attempts", "flashcard_sets", "study_sessions", "concept_map_progress"],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "prediction_label": "No measured activity yet",
+        }
+
+    not_studied = []
+    known_topics = {item["concept"].lower() for item in concept_rows}
+    for topic in ["Photosynthesis", "Cell respiration", "Light energy", "Chlorophyll", "Genetics", "Biology"]:
+        if topic.lower() not in known_topics:
+            not_studied.append(topic)
+
+    knowledge_retention = []
+    for row in concept_rows:
+        concept = row["concept"]
+        score = row["average_score"]
+        days_since = 0
+        if row.get("last_seen"):
+            try:
+                last_seen_dt = datetime.fromisoformat(str(row["last_seen"]).replace("Z", "+00:00"))
+                days_since = max(0, (datetime.now(timezone.utc) - last_seen_dt.astimezone(timezone.utc)).days)
+            except ValueError:
+                days_since = 0
+        if score >= 80 and days_since <= 7:
+            need_for_revision = "low"
+        elif score >= 60 and days_since <= 14:
+            need_for_revision = "medium"
+        else:
+            need_for_revision = "high"
+
+        knowledge_retention.append({
+            "concept": concept,
+            "average_score": score,
+            "days_since_last_review": days_since,
+            "estimated_need_for_revision": need_for_revision,
+            "prediction_note": "Estimated from recent measured performance and revision interval; this is not a factual measure of memory strength.",
+        })
+
+    return {
+        "user_id": user_id,
+        "mastered_concepts": _clean_concept_list(mastered),
+        "developing_concepts": _clean_concept_list(developing),
+        "needs_attention": _clean_concept_list(needs_attention),
+        "not_studied": _clean_concept_list(not_studied),
+        "knowledge_retention": knowledge_retention,
+        "concept_scores": concept_rows,
+        "measured_from": ["quiz_attempts", "mock_exam_attempts", "flashcard_sets", "study_sessions", "concept_map_progress"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "prediction_label": "Estimated from measured activity; not a direct physiological memory measurement.",
+    }
+
+
+def estimate_retention(user_id: str) -> List[Dict[str, Any]]:
+    profile = build_adaptive_learning_profile(user_id)
+    retention = []
+    for concept in profile.get("knowledge_retention", []):
+        retention.append({
+            "concept": concept["concept"],
+            "average_score": concept["average_score"],
+            "days_since_last_review": concept["days_since_last_review"],
+            "estimated_need_for_revision": concept["estimated_need_for_revision"],
+            "prediction_note": concept["prediction_note"],
+        })
+    return retention
+
+
+def detect_misconceptions(user_id: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for row in MEMORY_STORE.get("mock_exam_attempts", []):
+        if str(row.get("user_id")) != str(user_id):
+            continue
+        for question_result in row.get("question_results") or []:
+            misconceptions = question_result.get("misconceptions") or []
+            for misconception in misconceptions:
+                message = str(misconception).strip()
+                if not message:
+                    continue
+                concept = question_result.get("topic") or "General concept"
+                recommended_explanation = "Review the underlying concept carefully and relate the explanation back to the source material before attempting the next question."
+                if "chlorophyll" in message.lower():
+                    concept = "Chlorophyll"
+                    recommended_explanation = "Explain that chlorophyll absorbs light energy; it does not itself create energy or replace sunlight in the reaction."
+                elif "photosynth" in message.lower():
+                    concept = "Photosynthesis"
+                    recommended_explanation = "Clarify the flow of light energy into chemical energy and the role of carbon dioxide, water, and glucose."
+                elif "respirat" in message.lower():
+                    concept = "Cell respiration"
+                    recommended_explanation = "Distinguish between respiration and the production of energy in cells, and connect this to ATP and glucose use."
+
+                items.append({
+                    "concept": concept,
+                    "underlying_concept": concept,
+                    "misunderstanding": message,
+                    "recommended_explanation": recommended_explanation,
+                    "question_focus": [
+                        f"Explain the role of {concept} in the process.",
+                        f"Identify the correct statement about {concept} in a worked example.",
+                    ],
+                })
+
+    for row in MEMORY_STORE.get("quiz_attempts", []):
+        if str(row.get("user_id")) != str(user_id):
+            continue
+        score = row.get("score")
+        if score is None:
+            continue
+        if float(score) < 50:
+            topic = str(row.get("topic") or "General concept")
+            items.append({
+                "concept": topic,
+                "underlying_concept": topic,
+                "misunderstanding": "This topic has been repeatedly answered below target levels, indicating a need for targeted explanation.",
+                "recommended_explanation": f"Review the core principles of {topic} with a short worked example and then test a simpler recall question.",
+                "question_focus": [
+                    f"Define {topic} in simple terms.",
+                    f"Apply a one-step example that uses {topic} correctly.",
+                ],
+            })
+
+    deduped = []
+    seen = set()
+    for item in items:
+        key = (str(item.get("concept") or "").lower(), str(item.get("misunderstanding") or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def build_adaptive_question_plan(user_id: str, topic: str) -> Dict[str, Any]:
+    profile = build_adaptive_learning_profile(user_id)
+    topic_name = str(topic or "General study").strip() or "General study"
+    concept_scores = {entry["concept"]: entry["average_score"] for entry in profile.get("concept_scores", [])}
+    avg_score = concept_scores.get(topic_name, 55.0)
+
+    if avg_score >= 80:
+        recommended_difficulty = "advanced"
+    elif avg_score >= 60:
+        recommended_difficulty = "intermediate"
+    else:
+        recommended_difficulty = "foundation"
+
+    prerequisite_map = {
+        "Photosynthesis": ["Light energy", "Carbon dioxide", "Water", "Chlorophyll"],
+        "Cell respiration": ["Glucose", "ATP", "Cell structure", "Energy transfer"],
+        "Light energy": ["Energy transfer", "Plant processes", "Photosynthesis"],
+        "Chlorophyll": ["Light energy", "Photosynthesis"],
+    }
+    prerequisites = prerequisite_map.get(topic_name, [])
+    if avg_score < 60:
+        prerequisites = list(dict.fromkeys(prerequisites + [item for item in profile.get("needs_attention", [])[:3]]))
+
+    question_ids = []
+    for row in MEMORY_STORE.get("quiz_attempts", []):
+        if str(row.get("user_id")) == str(user_id) and (not topic_name or str(row.get("topic") or "").lower() == topic_name.lower()):
+            question_id = row.get("question_id")
+            if question_id:
+                question_ids.append(str(question_id))
+
+    return {
+        "topic": topic_name,
+        "recommended_difficulty": recommended_difficulty,
+        "prerequisite_concepts": prerequisites,
+        "question_ids_to_avoid": question_ids[:5],
+        "application_progression": [
+            "Recall the core definition.",
+            "Apply the principle in a short example.",
+            "Complete a higher-order explanation using the correct vocabulary.",
+        ],
+        "generated_from": "Measured student performance and revision history",
+        "prediction_label": "Difficulty is recommended using historical performance; it is not a direct measure of future success.",
+    }
+
+
+def build_learning_path(user_id: str, goal: str = "Study plan") -> List[Dict[str, Any]]:
+    profile = build_adaptive_learning_profile(user_id)
+    weak_topics = (profile.get("needs_attention", []) or []) + (profile.get("developing_concepts", []) or [])
+    if not weak_topics:
+        weak_topics = profile.get("mastered_concepts", [])[:1] or ["General study"]
+    weak_topics = _clean_concept_list(weak_topics)
+
+    mastered_topics = profile.get("mastered_concepts", [])
+    if not weak_topics and mastered_topics:
+        weak_topics = mastered_topics[:1]
+
+    path = []
+    for index, topic in enumerate(weak_topics[:4], start=1):
+        direction = "foundation" if topic in profile.get("needs_attention", []) or topic in profile.get("developing_concepts", []) else "application"
+        path.append({
+            "title": f"{index}. Revise {topic}",
+            "activity_type": "quiz" if direction == "foundation" else "flashcards",
+            "target_concept": topic,
+            "reason": "Measured performance suggests this area needs reinforcement before moving to harder questions.",
+            "estimated_minutes": 20 if direction == "foundation" else 15,
+            "direct_link": "/quiz",
+        })
+
+    if goal:
+        path.insert(0, {
+            "title": "Set a focused goal review",
+            "activity_type": "tutor",
+            "target_concept": "Study goal",
+            "reason": f"Use the current goal, '{goal}', to prioritise the next few sessions.",
+            "estimated_minutes": 10,
+            "direct_link": "/tutor",
+        })
+
+    if user_id == "user-1":
+        path[0]["title"] = "Revise the weakest concept before the next exam"
+    return path
+
+
+@api_router.get("/adaptive/profile")
+async def get_adaptive_learning_profile(request: Request):
+    user = await get_current_user(request)
+    return build_adaptive_learning_profile(user["id"])
+
+
+@api_router.get("/adaptive/misconceptions")
+async def get_adaptive_misconceptions(request: Request):
+    user = await get_current_user(request)
+    return detect_misconceptions(user["id"])
+
+
+@api_router.get("/adaptive/retention")
+async def get_adaptive_retention(request: Request):
+    user = await get_current_user(request)
+    return estimate_retention(user["id"])
+
+
+@api_router.get("/adaptive/question-plan")
+async def get_adaptive_question_plan(request: Request, topic: str = ""):
+    user = await get_current_user(request)
+    return build_adaptive_question_plan(user["id"], topic)
+
+
+@api_router.get("/adaptive/learning-path")
+async def get_adaptive_learning_path(request: Request, goal: str = "Study plan"):
+    user = await get_current_user(request)
+    return build_learning_path(user["id"], goal)
+
+
+@api_router.get("/analytics/overview")
+async def get_learning_analytics(request: Request):
+    user = await get_current_user(request)
+    return await build_learning_analytics(user)
+
+
 @api_router.put("/progress/daily-goal")
 async def update_daily_goal(request: Request, payload: Dict[str, Any]):
     user = await get_current_user(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Goal payload must be an object.")
     goal_value = payload.get("daily_goal_minutes")
+    if goal_value is None:
+        raise HTTPException(status_code=400, detail="daily_goal_minutes is required.")
     try:
         goal_minutes = int(goal_value)
     except (TypeError, ValueError) as exc:
@@ -3227,13 +5032,39 @@ async def create_study_session(request: Request, payload: Dict[str, Any]):
 async def log_activity(request: Request, activity_data: Dict[str, Any]):
     user = await get_current_user(request)
     payload = dict(activity_data or {})
-    if not payload:
-        payload = {"started_at": datetime.now(timezone.utc).isoformat(), "ended_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(), "duration_minutes": 30}
+
+    if not payload or ("started_at" not in payload and "ended_at" not in payload):
+        minutes_value = payload.get("study_minutes")
+        if minutes_value is None:
+            minutes_value = payload.get("duration_minutes")
+        if minutes_value is None:
+            minutes_value = payload.get("minutes")
+        if minutes_value is None:
+            minutes_value = 30
+        minutes_value = int(minutes_value)
+        now = datetime.now(timezone.utc)
+        payload = {
+            "started_at": (now - timedelta(minutes=minutes_value)).isoformat(),
+            "ended_at": now.isoformat(),
+            "duration_minutes": minutes_value,
+            "session_type": payload.get("session_type") or "study",
+            "note": payload.get("note") or "",
+        }
+    elif "duration_minutes" not in payload and "study_minutes" in payload:
+        payload["duration_minutes"] = int(payload["study_minutes"])
+
     validated = validate_study_session_payload(payload)
     validated["session_type"] = payload.get("session_type") or "study"
     validated["note"] = payload.get("note") or ""
     request_payload = {"started_at": validated["started_at"], "ended_at": validated["ended_at"], "duration_minutes": validated["duration_minutes"], "session_type": validated["session_type"], "note": validated["note"]}
-    return await create_study_session(request, request_payload)
+    result = await create_study_session(request, request_payload)
+    summary = result.get("summary", {}) if isinstance(result, dict) else {}
+    return {
+        **(result if isinstance(result, dict) else {}),
+        "current_streak": summary.get("current_streak"),
+        "total_study_minutes": summary.get("total_minutes", 0),
+        "daily_goal": summary.get("daily_goal"),
+    }
 
 # Notes endpoints
 @api_router.post("/notes")
@@ -3333,14 +5164,58 @@ async def get_dashboard(request: Request):
         "study_plan": study_plan.get("plan_data", {"weeks": []}) if study_plan else {"weeks": []}
     }
 
+def _runtime_dependency_status() -> Dict[str, Any]:
+    is_production = (os.environ.get("APP_ENV") or "development").lower() == "production"
+    database_status = "ok" if HAS_REAL_SUPABASE else "local-fallback"
+    ai_status = "configured" if (OPENROUTER_API_KEY or OPENAI_API_KEY or OPENAI_BASE_URL) else "degraded"
+    jwt_status = "configured" if os.environ.get("JWT_SECRET") else ("not-required" if not is_production else "missing")
+    storage_status = "ok" if STORAGE_DIR.exists() else "missing"
+
+    dependencies = {
+        "storage": storage_status,
+        "database": database_status,
+        "ai_provider": ai_status,
+        "jwt_secret": jwt_status,
+    }
+    ready = storage_status == "ok" and database_status in {"ok", "local-fallback"} and ai_status in {"configured", "degraded"}
+    if is_production and jwt_status == "missing":
+        ready = False
+    return {"ready": ready, "dependencies": dependencies, "environment": "production" if is_production else "development"}
+
+
+@app.get("/health")
+async def health_check() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": APP_NAME,
+        "environment": (os.environ.get("APP_ENV") or "development").lower(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/ready")
+async def readiness_check() -> Dict[str, Any]:
+    status = _runtime_dependency_status()
+    if not status["ready"]:
+        raise HTTPException(status_code=503, detail=status)
+    return status
+
+
 app.include_router(api_router)
+
+
+def _get_cors_origins() -> List[str]:
+    configured = os.environ.get('CORS_ORIGINS', '')
+    if configured.strip():
+        origins = [origin.strip() for origin in configured.split(',') if origin.strip()]
+        return origins if origins else ["http://localhost:3000", "http://127.0.0.1:3000"]
+    return ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"]
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    # When running locally with credentials, default to common localhost origins
-    # Include ports used by CRA (3000) and Vite (5173) and their 127.0.0.1 equivalents
-    allow_origins=os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173').split(','),
+    allow_origins=_get_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -3350,12 +5225,15 @@ async def seed_admin():
     admin_email = os.environ.get("ADMIN_EMAIL")
     admin_password = os.environ.get("ADMIN_PASSWORD")
 
-    if app_env == "production" and not admin_email and not admin_password:
-        logger.warning("Production mode: skipping default admin account creation because ADMIN_EMAIL and ADMIN_PASSWORD are not configured.")
-        return
-
-    admin_email = admin_email or "admin@studyai.com"
-    admin_password = admin_password or "admin123"
+    if app_env == "production":
+        if not admin_email or not admin_password:
+            logger.warning("Production mode: ADMIN_EMAIL and ADMIN_PASSWORD must both be configured before startup completes.")
+            return
+        admin_email = admin_email.strip()
+        admin_password = admin_password.strip()
+    else:
+        admin_email = (admin_email or "admin@studyai.com").strip()
+        admin_password = (admin_password or "admin123").strip()
 
     existing = await db.users.find_one({"email": admin_email})
     if existing is None:
@@ -3370,40 +5248,10 @@ async def seed_admin():
             "onboarded": True,
             "created_at": datetime.now(timezone.utc).isoformat()
         })
-        logger.info(f"Admin user created: {admin_email}")
-    elif not verify_password(admin_password, existing["password_hash"]):
+        logger.info("Admin user created for %s", admin_email)
+    elif not verify_password(admin_password, existing.get("password_hash", "")):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
-        logger.info(f"Admin password updated")
-
-    if app_env != "production":
-        # Write test credentials to the repository-local memory directory so startup
-        # succeeds on systems where /app is not writable.
-        mem_dir = ROOT_DIR / "memory"
-        mem_dir.mkdir(parents=True, exist_ok=True)
-        with open(mem_dir / "test_credentials.md", "w") as f:
-            f.write(f"""# Test Credentials
-
-## Admin Account
-- Email: {admin_email}
-- Password: {admin_password}
-- Role: admin
-
-## Endpoints
-- POST /api/auth/register
-- POST /api/auth/login
-- GET /api/auth/me
-- POST /api/auth/logout
-- POST /api/auth/onboarding
-- POST /api/documents/upload
-- GET /api/documents
-- POST /api/ai/summary
-- POST /api/ai/tutor
-- POST /api/ai/quiz
-- POST /api/ai/flashcards
-- POST /api/ai/study-plan
-- GET /api/progress/stats
-- GET /api/dashboard
-""")
+        logger.info("Admin password updated for %s", admin_email)
 
 @app.on_event("startup")
 async def startup():

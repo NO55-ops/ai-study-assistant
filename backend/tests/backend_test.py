@@ -4,17 +4,21 @@ import io
 import json
 import time
 import uuid
+from pathlib import Path
 import pytest
 import requests
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND_ENV_PATH = PROJECT_ROOT / "frontend" / ".env"
+
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL")
+if not BASE_URL and FRONTEND_ENV_PATH.exists():
+    for line in FRONTEND_ENV_PATH.read_text().splitlines():
+        if line.startswith("REACT_APP_BACKEND_URL="):
+            BASE_URL = line.split("=", 1)[1].strip()
+            break
 if not BASE_URL:
-    # fallback from frontend .env
-    with open("/app/frontend/.env") as f:
-        for line in f:
-            if line.startswith("REACT_APP_BACKEND_URL="):
-                BASE_URL = line.split("=", 1)[1].strip()
-                break
+    raise RuntimeError(f"REACT_APP_BACKEND_URL is not set and no frontend .env file was found at {FRONTEND_ENV_PATH}")
 BASE_URL = BASE_URL.rstrip("/")
 API = f"{BASE_URL}/api"
 

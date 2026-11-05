@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { flashcardService, documentService } from '../services/api';
-import { Layers, ArrowLeft, ArrowRight, RefreshCw } from 'lucide-react';
+import { Layers, ArrowLeft, ArrowRight, RefreshCw, Plus, Trash2, NotebookPen } from 'lucide-react';
 import { toast } from 'sonner';
 import StudyWorkspace from '../components/StudyWorkspace';
+
+const emptyCard = () => ({ front: '', back: '', hint: '' });
 
 const Flashcards = () => {
   const navigate = useNavigate();
@@ -14,34 +16,45 @@ const Flashcards = () => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [newDeck, setNewDeck] = useState({
+    name: '',
+    document_id: '',
+    flashcards: [emptyCard()],
+  });
+
+  const fetchFlashcards = async () => {
+    try {
+      const [{ data: flashcardsData }, { data: documentsData }] = await Promise.all([
+        flashcardService.list(),
+        documentService.list(),
+      ]);
+
+      setDocuments(documentsData);
+      setFlashcardSets(flashcardsData);
+      if (flashcardsData.length > 0) {
+        setSelectedSet(flashcardsData[0]);
+        setCurrentIndex(0);
+        setFlipped(false);
+      } else {
+        setSelectedSet(null);
+      }
+    } catch (e) {
+      toast.error('Failed to load flashcards');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchFlashcards = async () => {
-      try {
-        const [{ data: flashcardsData }, { data: documentsData }] = await Promise.all([
-          flashcardService.list(),
-          documentService.list(),
-        ]);
-
-        setDocuments(documentsData);
-        setFlashcardSets(flashcardsData);
-        if (flashcardsData.length > 0) {
-          setSelectedSet(flashcardsData[0]);
-        }
-      } catch (e) {
-        toast.error('Failed to load flashcards');
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchFlashcards();
   }, []);
 
-  const currentCard = selectedSet?.flashcards[currentIndex];
+  const currentCard = selectedSet?.flashcards?.[currentIndex] || null;
   const selectedDocument = documents.find((doc) => doc.id === selectedSet?.document_id) || null;
 
   const nextCard = () => {
-    if (currentIndex < selectedSet.flashcards.length - 1) {
+    if (selectedSet && currentIndex < selectedSet.flashcards.length - 1) {
       setCurrentIndex(currentIndex + 1);
       setFlipped(false);
     }
@@ -64,6 +77,54 @@ const Flashcards = () => {
     }
   };
 
+  const handleCreateDeck = async () => {
+    const cards = newDeck.flashcards.filter((card) => card.front.trim() || card.back.trim() || card.hint.trim());
+    if (!cards.length) {
+      toast.error('Add at least one complete flashcard.');
+      return;
+    }
+
+    try {
+      const payload = {
+        name: newDeck.name || 'Custom Study Deck',
+        document_id: newDeck.document_id || null,
+        document_name: documents.find((doc) => doc.id === newDeck.document_id)?.original_filename || 'Custom Study Deck',
+        flashcards: cards.map((card) => ({
+          front: card.front.trim(),
+          back: card.back.trim(),
+          hint: card.hint.trim(),
+        })),
+      };
+
+      const { data } = await flashcardService.create(payload);
+      setNewDeck({ name: '', document_id: '', flashcards: [emptyCard()] });
+      setCreating(false);
+      setFlashcardSets((prev) => [data, ...prev]);
+      setSelectedSet(data);
+      setCurrentIndex(0);
+      setFlipped(false);
+      toast.success('Flashcard deck created!');
+    } catch (error) {
+      toast.error(error?.response?.data?.detail || 'Could not create your flashcard deck.');
+    }
+  };
+
+  const handleDeleteDeck = async (deckId) => {
+    try {
+      await flashcardService.remove(deckId);
+      const nextSets = flashcardSets.filter((set) => set.id !== deckId);
+      setFlashcardSets(nextSets);
+      if (selectedSet?.id === deckId) {
+        setSelectedSet(nextSets[0] || null);
+        setCurrentIndex(0);
+        setFlipped(false);
+      }
+      toast.success('Deck deleted.');
+    } catch (error) {
+      toast.error('Unable to delete deck.');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen" style={{ background: 'var(--bg-main)' }}>
@@ -75,15 +136,18 @@ const Flashcards = () => {
     );
   }
 
-  if (flashcardSets.length === 0) {
+  if (flashcardSets.length === 0 && !creating) {
     return (
       <div className="min-h-screen noise-overlay flex items-center justify-center" style={{ background: 'var(--bg-main)' }}>
-        <div className="text-center">
+        <div className="text-center max-w-xl">
           <Layers className="w-24 h-24 text-[#0A0A0A] mx-auto mb-6 opacity-20" strokeWidth={1.5} />
           <h2 className="text-3xl font-black text-[#0A0A0A] mb-4" style={{ fontFamily: 'Outfit, sans-serif' }}>
             No Flashcards Yet
           </h2>
-          <p className="text-[#0A0A0A] mb-6">Generate flashcards from your documents to get started</p>
+          <p className="text-[#0A0A0A] mb-8">Generate flashcards from a document or create a custom deck from scratch.</p>
+          <button onClick={() => setCreating(true)} className="btn-primary px-6 py-3">
+            Create Your First Deck
+          </button>
         </div>
       </div>
     );
@@ -109,26 +173,124 @@ const Flashcards = () => {
             </p>
           </div>
 
-          {flashcardSets.length > 1 && (
-            <div className="mb-6">
-              <label className="block text-sm font-bold text-[#0A0A0A] mb-3 uppercase tracking-wide">Select Set</label>
-              <select
-                value={selectedSet?.id || ''}
-                onChange={(e) => {
-                  const set = flashcardSets.find((s) => s.id === e.target.value);
-                  setSelectedSet(set);
-                  setCurrentIndex(0);
-                  setFlipped(false);
-                }}
-                className="input-field"
-                data-testid="select-flashcard-set"
-              >
-                {flashcardSets.map((set, idx) => (
-                  <option key={set.id} value={set.id}>
-                    {set.document_name || `Set ${idx + 1}`}
-                  </option>
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <button
+              onClick={() => setCreating((prev) => !prev)}
+              className="btn-secondary py-2 px-4 text-sm flex items-center gap-2"
+            >
+              <NotebookPen className="w-4 h-4" strokeWidth={2.5} />
+              {creating ? 'Hide Composer' : 'New Deck'}
+            </button>
+            {flashcardSets.length > 1 && (
+              <div className="w-full md:w-72">
+                <label className="block text-sm font-bold text-[#0A0A0A] mb-2 uppercase tracking-wide">Select Set</label>
+                <select
+                  value={selectedSet?.id || ''}
+                  onChange={(e) => {
+                    const set = flashcardSets.find((s) => s.id === e.target.value);
+                    setSelectedSet(set);
+                    setCurrentIndex(0);
+                    setFlipped(false);
+                  }}
+                  className="input-field"
+                  data-testid="select-flashcard-set"
+                >
+                  {flashcardSets.map((set, idx) => (
+                    <option key={set.id} value={set.id}>
+                      {set.name || set.document_name || `Set ${idx + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {creating && (
+            <div className="mb-8 rounded-3xl border-2 border-dashed border-[#0A0A0A] bg-[#FFFDF8] p-6">
+              <h3 className="text-2xl font-black text-[#0A0A0A] mb-4">Create custom flashcard deck</h3>
+              <div className="grid gap-4 md:grid-cols-2">
+                <input
+                  value={newDeck.name}
+                  onChange={(e) => setNewDeck((prev) => ({ ...prev, name: e.target.value }))}
+                  placeholder="Deck name"
+                  className="input-field"
+                />
+                <select
+                  value={newDeck.document_id}
+                  onChange={(e) => setNewDeck((prev) => ({ ...prev, document_id: e.target.value }))}
+                  className="input-field"
+                >
+                  <option value="">No linked document</option>
+                  {documents.map((doc) => (
+                    <option key={doc.id} value={doc.id}>{doc.original_filename || doc.filename}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="mt-5 space-y-4">
+                {newDeck.flashcards.map((card, index) => (
+                  <div key={index} className="grid gap-3 rounded-2xl border border-black/10 bg-white p-4 md:grid-cols-[1fr_1fr_auto]">
+                    <input
+                      value={card.front}
+                      onChange={(e) => {
+                        const cards = [...newDeck.flashcards];
+                        cards[index].front = e.target.value;
+                        setNewDeck((prev) => ({ ...prev, flashcards: cards }));
+                      }}
+                      placeholder="Front (term / question)"
+                      className="input-field"
+                    />
+                    <input
+                      value={card.back}
+                      onChange={(e) => {
+                        const cards = [...newDeck.flashcards];
+                        cards[index].back = e.target.value;
+                        setNewDeck((prev) => ({ ...prev, flashcards: cards }));
+                      }}
+                      placeholder="Back (answer / definition)"
+                      className="input-field"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (newDeck.flashcards.length === 1) {
+                          setNewDeck((prev) => ({ ...prev, flashcards: [emptyCard()] }));
+                          return;
+                        }
+                        setNewDeck((prev) => ({
+                          ...prev,
+                          flashcards: prev.flashcards.filter((_, cardIndex) => cardIndex !== index),
+                        }));
+                      }}
+                      className="btn-secondary px-3 py-2 text-sm"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                    <input
+                      value={card.hint}
+                      onChange={(e) => {
+                        const cards = [...newDeck.flashcards];
+                        cards[index].hint = e.target.value;
+                        setNewDeck((prev) => ({ ...prev, flashcards: cards }));
+                      }}
+                      placeholder="Optional hint"
+                      className="input-field md:col-span-3"
+                    />
+                  </div>
                 ))}
-              </select>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => setNewDeck((prev) => ({ ...prev, flashcards: [...prev.flashcards, emptyCard()] }))}
+                  className="btn-secondary py-2 px-4 text-sm flex items-center gap-2"
+                >
+                  <Plus className="w-4 h-4" strokeWidth={2.5} />
+                  Add Card
+                </button>
+                <button onClick={handleCreateDeck} className="btn-primary py-2 px-4 text-sm">Save Deck</button>
+              </div>
             </div>
           )}
 
@@ -140,18 +302,26 @@ const Flashcards = () => {
                     className="text-2xl font-black text-[#0A0A0A]"
                     style={{ fontFamily: 'Outfit, sans-serif' }}
                   >
-                    {selectedSet.document_name || 'Untitled Document'}
+                    {selectedSet.name || selectedSet.document_name || 'Untitled Deck'}
                   </h2>
                   <p className="text-sm text-gray-600">
-                    Flashcards from this document
+                    {selectedSet.document_name ? 'Flashcards from this document' : 'Custom study deck'}
                   </p>
                 </div>
 
+                {selectedSet.document_id && (
+                  <button
+                    onClick={() => navigate(`/documents/${selectedSet.document_id}`)}
+                    className="btn-secondary py-2 px-4 text-sm"
+                  >
+                    View Source Document
+                  </button>
+                )}
                 <button
-                  onClick={() => navigate(`/documents/${selectedSet.document_id}`)}
-                  className="btn-secondary py-2 px-4 text-sm"
+                  onClick={() => handleDeleteDeck(selectedSet.id)}
+                  className="btn-secondary py-2 px-4 text-sm text-red-600 border-red-200"
                 >
-                  View Source Document
+                  Delete Deck
                 </button>
               </div>
 

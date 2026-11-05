@@ -8,10 +8,11 @@ import StudyWorkspace from '../components/StudyWorkspace';
 const Tutor = () => {
   const [searchParams] = useSearchParams();
   const docId = searchParams.get('doc');
+  const questionParam = searchParams.get('question');
   const [documents, setDocuments] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState(docId || '');
   const [difficultyMode, setDifficultyMode] = useState('intermediate');
-  const [question, setQuestion] = useState('');
+  const [question, setQuestion] = useState(questionParam || '');
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
@@ -33,6 +34,12 @@ const Tutor = () => {
     };
     fetchDocs();
   }, [docId]);
+
+  useEffect(() => {
+    if (questionParam) {
+      setQuestion(questionParam);
+    }
+  }, [questionParam]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

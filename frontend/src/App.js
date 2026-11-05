@@ -9,9 +9,11 @@ import NotesWidget from './components/NotesWidget';
 import Login from './pages/Login';
 import Onboarding from './pages/Onboarding';
 import Dashboard from './pages/Dashboard';
+import Planner from './pages/Planner';
 import Upload from './pages/Upload';
 import Documents from './pages/Documents';
 import DocumentView from './pages/DocumentView';
+import KnowledgeGraph from './pages/KnowledgeGraph';
 import Tutor from './pages/Tutor';
 import Quiz from './pages/Quiz';
 import Flashcards from './pages/Flashcards';
@@ -53,6 +55,24 @@ function App() {
               <ProtectedRoute>
                 <Navbar />
                 <Dashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/planner"
+            element={
+              <ProtectedRoute>
+                <Navbar />
+                <Planner />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/knowledge-graph"
+            element={
+              <ProtectedRoute>
+                <Navbar />
+                <KnowledgeGraph />
               </ProtectedRoute>
             }
           />

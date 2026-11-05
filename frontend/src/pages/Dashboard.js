@@ -9,17 +9,20 @@ const Dashboard = () => {
   const { user } = useAuth();
   const [dashboardData, setDashboardData] = useState(null);
   const [studySummary, setStudySummary] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchDashboard = async () => {
       try {
-        const [dashboardResp, summaryResp] = await Promise.all([
+        const [dashboardResp, summaryResp, analyticsResp] = await Promise.all([
           dashboardService.get(),
           progressService.getSummary(),
+          dashboardService.getAnalytics(),
         ]);
         setDashboardData(dashboardResp.data);
         setStudySummary(summaryResp.data);
+        setAnalytics(analyticsResp.data);
       } catch (e) {
         toast.error('Failed to load dashboard');
       } finally {
@@ -42,10 +45,16 @@ const Dashboard = () => {
 
   const stats = dashboardData?.stats || {};
   const summary = studySummary || dashboardData?.study_summary || {};
-  const dailyGoal = summary.daily_goal || { goal_minutes: 60, minutes_completed: 0, minutes_remaining: 60, progress_percent: 0, goal_reached: false };
-  const weeklyActivity = summary.weekly_activity || [];
+  const analyticsSummary = analytics || {};
+  const dailyGoal = summary.daily_goal || analyticsSummary.daily_goal || { goal_minutes: 60, minutes_completed: 0, minutes_remaining: 60, progress_percent: 0, goal_reached: false };
+  const weeklyActivity = summary.weekly_activity || analyticsSummary.weekly_activity || [];
   const recentActivity = summary.recent_activity || [];
   const activeDays = summary.active_days || [];
+  const mockExamHistory = analyticsSummary.mock_exam_history || [];
+  const flashcardMastery = analyticsSummary.flashcard_mastery || { total_cards: 0, average_mastery: 0, cards_reviewed: 0 };
+  const performanceOverTime = analyticsSummary.quiz_performance_over_time || [];
+  const recommendations = analyticsSummary.recommendations || [];
+  const insightList = analyticsSummary.insights || [];
 
   const activityCalendar = Array.from({ length: 35 }, (_, index) => {
     const date = new Date();
@@ -245,7 +254,84 @@ const Dashboard = () => {
           </div>
         </div>
 
-        <div className="card mt-8 animate-fade-up stagger-8" data-testid="calendar-card">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+          <div className="card animate-fade-up stagger-8" data-testid="performance-card">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-[#0A0A0A]/70">Overall progress</p>
+                <h2 className="text-2xl font-black text-[#0A0A0A]" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                  Learning momentum
+                </h2>
+              </div>
+              <TrendingUp className="w-6 h-6 text-[#0A0A0A]" strokeWidth={2.5} />
+            </div>
+            <div className="mb-4">
+              <div className="flex items-end justify-between">
+                <span className="text-4xl font-black text-[#0A0A0A]">{analyticsSummary.overall_progress ?? 0}%</span>
+                <span className="text-sm text-[#0A0A0A]">Based on real study data</span>
+              </div>
+              <div className="h-3 mt-3 bg-[#F2E8CF] border-2 border-[#0A0A0A] rounded-full overflow-hidden">
+                <div className="h-full bg-[#A2D2FF]" style={{ width: `${Math.min(100, analyticsSummary.overall_progress ?? 0)}%` }} />
+              </div>
+            </div>
+            <div className="space-y-2 text-sm text-[#0A0A0A]">
+              <div className="flex justify-between"><span>Study time</span><span className="font-bold">{summary.total_minutes ?? 0}m</span></div>
+              <div className="flex justify-between"><span>Documents</span><span className="font-bold">{stats.documents_uploaded ?? 0}</span></div>
+              <div className="flex justify-between"><span>Flashcards</span><span className="font-bold">{flashcardMastery.total_cards ?? 0}</span></div>
+            </div>
+          </div>
+
+          <div className="card animate-fade-up stagger-9" data-testid="mock-exam-card">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-[#0A0A0A]/70">Mock exam</p>
+                <h2 className="text-2xl font-black text-[#0A0A0A]" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                  Recent results
+                </h2>
+              </div>
+              <Award className="w-6 h-6 text-[#0A0A0A]" strokeWidth={2.5} />
+            </div>
+            {mockExamHistory.length > 0 ? (
+              <div className="space-y-3">
+                {mockExamHistory.slice(0, 3).map((attempt, index) => (
+                  <div key={attempt.exam_id || index} className="p-3 rounded-xl bg-[#FDFBF7] border-2 border-[#0A0A0A]">
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-[#0A0A0A]">{attempt.percentage ?? 0}%</span>
+                      <span className="text-xs text-[#0A0A0A]">{attempt.total_marks ?? 0}/{attempt.max_marks ?? 0}</span>
+                    </div>
+                    <p className="text-xs mt-1 text-[#0A0A0A]">
+                      {attempt.created_at ? new Date(attempt.created_at).toLocaleDateString() : 'Recent attempt'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-[#0A0A0A]">No mock exam results yet. Complete a timed exam to build this trend.</p>
+            )}
+          </div>
+
+          <div className="card animate-fade-up stagger-10" data-testid="mastery-card">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-[#0A0A0A]/70">Flashcards</p>
+                <h2 className="text-2xl font-black text-[#0A0A0A]" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                  Mastery
+                </h2>
+              </div>
+              <BookOpen className="w-6 h-6 text-[#0A0A0A]" strokeWidth={2.5} />
+            </div>
+            <div className="mb-4">
+              <div className="text-4xl font-black text-[#0A0A0A]">{flashcardMastery.average_mastery ?? 0}%</div>
+              <p className="text-sm text-[#0A0A0A] mt-1">Average deck mastery</p>
+            </div>
+            <div className="h-3 bg-[#F2E8CF] border-2 border-[#0A0A0A] rounded-full overflow-hidden">
+              <div className="h-full bg-[#FFC857]" style={{ width: `${Math.min(100, flashcardMastery.average_mastery ?? 0)}%` }} />
+            </div>
+            <p className="text-sm mt-3 text-[#0A0A0A]">{flashcardMastery.cards_reviewed ?? 0} reviewed cards across {flashcardMastery.total_cards ?? 0} total cards.</p>
+          </div>
+        </div>
+
+        <div className="card mt-8 animate-fade-up stagger-11" data-testid="calendar-card">
           <div className="flex items-center justify-between mb-6">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-[#0A0A0A]/70">Calendar</p>
@@ -275,12 +361,75 @@ const Dashboard = () => {
           </div>
         </div>
 
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
+          <div className="card animate-fade-up stagger-12" data-testid="performance-trend-card">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-[#0A0A0A]/70">Performance</p>
+                <h2 className="text-2xl font-black text-[#0A0A0A]" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                  Quiz and mock exam trend
+                </h2>
+              </div>
+            </div>
+            {performanceOverTime.length > 0 ? (
+              <div className="space-y-3">
+                {performanceOverTime.slice(-5).map((point, index) => (
+                  <div key={`${point.date || index}-${index}`} className="flex items-center gap-3">
+                    <span className="text-xs font-bold text-[#0A0A0A] w-16">{point.date ? new Date(point.date).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'Recent'}</span>
+                    <div className="flex-1 h-2.5 bg-[#F2E8CF] border border-[#0A0A0A] rounded-full overflow-hidden">
+                      <div className="h-full bg-[#3BB273]" style={{ width: `${Math.min(100, point.percentage || 0)}%` }} />
+                    </div>
+                    <span className="w-12 text-right text-xs font-bold text-[#0A0A0A]">{point.percentage ?? 0}%</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-[#0A0A0A]">No quiz or mock exam performance data has been recorded yet.</p>
+            )}
+          </div>
+
+          <div className="card animate-fade-up stagger-13" data-testid="insights-card">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-[#0A0A0A]/70">AI guidance</p>
+                <h2 className="text-2xl font-black text-[#0A0A0A]" style={{ fontFamily: 'Outfit, sans-serif' }}>
+                  Insights & recommendations
+                </h2>
+              </div>
+            </div>
+            <ul className="space-y-3 text-sm text-[#0A0A0A]">
+              {(insightList.length > 0 ? insightList : ['Your progress is being tracked in real time as you study.']).map((insight, index) => (
+                <li key={`${insight}-${index}`} className="flex gap-2">
+                  <span className="mt-1 h-2.5 w-2.5 rounded-full bg-[#FF5722]" />
+                  <span>{insight}</span>
+                </li>
+              ))}
+              {(recommendations.length > 0) && recommendations.map((recommendation, index) => (
+                <li key={`${recommendation}-${index}`} className="flex gap-2">
+                  <span className="mt-1 h-2.5 w-2.5 rounded-full bg-[#3BB273]" />
+                  <span>{recommendation}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
           <div className="lg:col-span-2 card animate-fade-up stagger-9" data-testid="quick-actions-card">
             <h2 className="text-2xl font-black text-[#0A0A0A] mb-6" style={{ fontFamily: 'Outfit, sans-serif' }}>
               Quick Actions
             </h2>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <Link
+                to="/planner"
+                className="p-6 bg-[#FDFBF7] rounded-xl border-2 border-[#0A0A0A] hover:-translate-y-1 hover:neo-shadow transition-all"
+                data-testid="planner-action-btn"
+              >
+                <Calendar className="w-8 h-8 text-[#FF5722] mb-3" strokeWidth={2.5} />
+                <h3 className="font-bold text-[#0A0A0A] mb-1">Study Planner</h3>
+                <p className="text-sm text-[#0A0A0A]">Build your schedule</p>
+              </Link>
+
               <Link
                 to="/upload"
                 className="p-6 bg-[#FDFBF7] rounded-xl border-2 border-[#0A0A0A] hover:-translate-y-1 hover:neo-shadow transition-all"
