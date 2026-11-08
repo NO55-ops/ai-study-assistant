@@ -60,7 +60,8 @@ const Tutor = () => {
     setMessages((prev) => [...prev, aiMessage]);
 
     try {
-      const API = process.env.REACT_APP_BACKEND_URL + '/api';
+      const backendBaseUrl = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '');
+      const API = `${backendBaseUrl}/api`;
       const response = await fetch(`${API}/ai/tutor`, {
         method: 'POST',
         headers: {

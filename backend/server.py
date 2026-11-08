@@ -1771,6 +1771,15 @@ class MemoryQueryBuilder:
         )
         return self
 
+    def gte(self, field: str, value: Any):
+        self.filters.append(
+            lambda row, f=field, v=value: (
+                _coerce_datetime_for_compare(row.get(f)) is not None
+                and _coerce_datetime_for_compare(row.get(f)) >= _coerce_datetime_for_compare(v)
+            )
+        )
+        return self
+
     def order(self, field: str, desc: bool = False):
         self.sort_spec = (field, desc)
         return self
@@ -2023,6 +2032,27 @@ class SupabaseDatabase:
 db = SupabaseDatabase()
 MEMORY_STORE.setdefault("concept_maps", [])
 MEMORY_STORE.setdefault("concept_map_progress", [])
+
+
+def _coerce_datetime_for_compare(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            return text
+    return value
 
 
 def _remove_markdown_fences(value: Optional[str]) -> str:
@@ -2459,6 +2489,23 @@ def create_refresh_token(user_id: str) -> str:
     payload = {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
+async def _find_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    normalized_email = str(email or "").strip().lower()
+    if not normalized_email:
+        return None
+
+    result = (
+        supabase
+        .table("users")
+        .select("*")
+        .eq("email", normalized_email)
+        .limit(1)
+        .execute()
+    )
+    user = result.data[0] if getattr(result, "data", None) else None
+    return normalize_record(user) if isinstance(user, dict) else user
+
+
 async def get_current_user(request: Request) -> dict:
     # Safe diagnostic: log only cookie names (never values) and request path
     try:
@@ -2528,6 +2575,16 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    email: EmailStr
+    token: str
+    new_password: str
 
 
 class OnboardingRequest(BaseModel):
@@ -2977,6 +3034,271 @@ async def login(req: LoginRequest, response: Response):
     return user
 
 
+PASSWORD_RESET_TOKEN_TTL_MINUTES = int(os.environ.get("PASSWORD_RESET_TOKEN_TTL_MINUTES", "30"))
+PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS", "3600"))
+PASSWORD_RESET_RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("PASSWORD_RESET_RATE_LIMIT_MAX_REQUESTS", "3"))
+FRONTEND_URL = (os.environ.get("FRONTEND_URL") or "http://localhost:3000").rstrip("/")
+PASSWORD_RESET_EMAIL_ENABLED = os.environ.get("SEND_PASSWORD_RESET_EMAIL", "1").strip().lower() in {"1", "true", "yes", "on"}
+PASSWORD_RESET_FROM = os.environ.get("PASSWORD_RESET_FROM", "")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+
+
+def _password_reset_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_iso_datetime(value: Optional[Any]) -> datetime:
+    if value is None:
+        raise ValueError("Timestamp is required.")
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            raise ValueError("Timestamp is required.")
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise ValueError(f"Invalid ISO datetime: {value}") from exc
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+async def _get_recent_password_reset_requests(email: str) -> List[Dict[str, Any]]:
+    email = str(email or "").strip().lower()
+    if not email:
+        return []
+
+    window_start = datetime.now(timezone.utc) - timedelta(seconds=PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS)
+    rows: List[Dict[str, Any]] = []
+    try:
+        rows = (
+            supabase.table("password_reset_requests")
+            .select("*")
+            .eq("email", email)
+            .gte("created_at", window_start.isoformat())
+            .limit(20)
+            .execute()
+        ).data or []
+    except Exception:
+        rows = MEMORY_STORE.setdefault("password_reset_requests", [])
+
+    filtered: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            created_at = _parse_iso_datetime(row.get("created_at"))
+        except ValueError:
+            continue
+        if created_at >= window_start:
+            filtered.append(row)
+    return filtered
+
+
+async def _record_password_reset_request(email: str, user_id: Optional[str] = None) -> None:
+    normalized_email = str(email or "").strip().lower()
+    if not normalized_email:
+        return
+
+    record = {
+        "id": str(uuid.uuid4()),
+        "email": normalized_email,
+        "user_id": str(user_id) if user_id else None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        supabase.table("password_reset_requests").insert(record).execute()
+    except Exception:
+        MEMORY_STORE.setdefault("password_reset_requests", [])
+        MEMORY_STORE["password_reset_requests"].append(record)
+        logger.warning("Password reset rate-limit store is unavailable; using in-memory fallback for local development.")
+
+
+async def _check_password_reset_rate_limit(email: str) -> None:
+    recent_requests = await _get_recent_password_reset_requests(email)
+    if len(recent_requests) >= PASSWORD_RESET_RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many password reset requests. Please try again later."
+        )
+
+
+async def _send_password_reset_email(email: str, reset_link: str) -> None:
+    if not PASSWORD_RESET_EMAIL_ENABLED:
+        logger.info("Password reset email delivery is disabled. Reset link generation was skipped.")
+        return
+
+    if not RESEND_API_KEY or not PASSWORD_RESET_FROM:
+        logger.warning("Password reset email delivery is not configured; skipping actual email send.")
+        return
+
+    payload = {
+        "from": PASSWORD_RESET_FROM,
+        "to": [email],
+        "subject": "Reset your AI Study Assistant password",
+        "html": (
+            "<p>We received a request to reset your password.</p>"
+            f"<p><a href=\"{reset_link}\">Reset your password</a></p>"
+            "<p>If you did not request this, you can ignore this email.</p>"
+        ),
+    }
+
+    try:
+        response = httpx.post(
+            url="https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=15.0,
+        )
+        response.raise_for_status()
+    except Exception:
+        logger.exception("Password reset email delivery failed.")
+
+
+async def request_password_reset(payload: Any) -> Dict[str, Any]:
+    email = ""
+    if isinstance(payload, dict):
+        email = str(payload.get("email") or "")
+    elif hasattr(payload, "email"):
+        email = str(getattr(payload, "email") or "")
+    email = email.strip().lower()
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+
+    await _check_password_reset_rate_limit(email)
+
+    user = await _find_user_by_email(email)
+    await _record_password_reset_request(email, str(user["id"]) if user else None)
+
+    if user is None:
+        return {
+            "message": "If an account exists for this email, a password reset link was sent."
+        }
+
+    reset_token = secrets.token_urlsafe(32)
+    reset_expires_at = (datetime.now(timezone.utc) + timedelta(minutes=PASSWORD_RESET_TOKEN_TTL_MINUTES)).isoformat()
+    token_record = {
+        "id": str(uuid.uuid4()),
+        "user_id": str(user["id"]),
+        "email": email,
+        "token_hash": _password_reset_token_hash(reset_token),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": reset_expires_at,
+        "used_at": None,
+    }
+
+    try:
+        supabase.table("password_reset_tokens").insert(token_record).execute()
+    except Exception:
+        MEMORY_STORE.setdefault("password_reset_tokens", [])
+        MEMORY_STORE["password_reset_tokens"].append(token_record)
+        logger.warning("Password reset token store is unavailable; using in-memory fallback for local development.")
+
+    reset_link = f"{FRONTEND_URL}/login?mode=reset&email={quote_plus(email)}&token={quote_plus(reset_token)}"
+    await _send_password_reset_email(email, reset_link)
+
+    return {
+        "message": "If an account exists for this email, a password reset link was sent."
+    }
+
+
+async def confirm_password_reset(payload: Any) -> Dict[str, Any]:
+    email = ""
+    token = ""
+    new_password = ""
+
+    if isinstance(payload, dict):
+        email = str(payload.get("email") or "")
+        token = str(payload.get("token") or "")
+        new_password = str(payload.get("new_password") or "")
+    elif hasattr(payload, "email"):
+        email = str(getattr(payload, "email") or "")
+        token = str(getattr(payload, "token") or "")
+        new_password = str(getattr(payload, "new_password") or "")
+
+    email = email.strip().lower()
+    token = token.strip()
+    new_password = new_password.strip()
+
+    if not email or not token:
+        raise HTTPException(status_code=400, detail="Email and reset token are required.")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters long.")
+
+    user = await _find_user_by_email(email)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+    rows: List[Dict[str, Any]] = []
+    try:
+        rows = (
+            supabase.table("password_reset_tokens")
+            .select("*")
+            .eq("email", email)
+            .eq("user_id", str(user["id"]))
+            .limit(50)
+            .execute()
+        ).data or []
+    except Exception:
+        rows = MEMORY_STORE.setdefault("password_reset_tokens", [])
+
+    valid_record = None
+    now = datetime.now(timezone.utc)
+    token_hash = _password_reset_token_hash(token)
+
+    def _reset_token_sort_key(item: Dict[str, Any]) -> datetime:
+        try:
+            return _parse_iso_datetime(item.get("created_at"))
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    for row in sorted(rows, key=_reset_token_sort_key, reverse=True):
+        if row.get("used_at"):
+            continue
+        expires_at = row.get("expires_at")
+        try:
+            expires_dt = _parse_iso_datetime(expires_at)
+        except ValueError:
+            continue
+        if expires_dt < now:
+            continue
+        if str(row.get("token_hash") or "") == token_hash:
+            valid_record = row
+            break
+
+    if valid_record is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+    new_hash = hash_password(new_password)
+    try:
+        supabase.table("users").update({"password_hash": new_hash}).eq("id", str(user["id"])).execute()
+    except Exception:
+        matching_users = MEMORY_STORE.setdefault("users", [])
+        for row in matching_users:
+            if str(row.get("id") or row.get("_id")) == str(user["id"]):
+                row["password_hash"] = new_hash
+                break
+        logger.warning("Password reset update could not be persisted to the users table; using in-memory fallback.")
+
+    try:
+        supabase.table("password_reset_tokens").update({"used_at": datetime.now(timezone.utc).isoformat()}).eq("user_id", str(user["id"])).execute()
+    except Exception:
+        for row in MEMORY_STORE.setdefault("password_reset_tokens", []):
+            if str(row.get("user_id")) == str(user["id"]) and not row.get("used_at"):
+                row["used_at"] = datetime.now(timezone.utc).isoformat()
+        logger.warning("Password reset tokens could not be invalidated as used; using in-memory fallback.")
+
+    return {"message": "Password reset successfully"}
+
+
 @api_router.post("/auth/logout")
 async def logout(response: Response):
     response.delete_cookie(
@@ -2992,6 +3314,16 @@ async def logout(response: Response):
     return {
         "message": "Logged out successfully"
     }
+
+
+@api_router.post("/auth/password-reset/request")
+async def request_password_reset_route(req: PasswordResetRequest):
+    return await request_password_reset(req)
+
+
+@api_router.post("/auth/password-reset/confirm")
+async def confirm_password_reset_route(req: PasswordResetConfirmRequest):
+    return await confirm_password_reset(req)
 
 
 @api_router.get("/auth/me")
@@ -4082,24 +4414,6 @@ async def get_current_study_plan(request: Request):
         return {"plan_data": {"weeks": []}}
     plan = ensure_response_id(plan) or plan
     return plan
-
-def _parse_iso_datetime(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        raw = str(value or "").strip()
-        if not raw:
-            raise ValueError("Timestamp is required.")
-        if raw.endswith("Z"):
-            raw = raw[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(raw)
-        except ValueError as exc:
-            raise ValueError(f"Invalid ISO datetime: {value}") from exc
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
 
 def _user_timezone(user: Optional[Dict[str, Any]] = None, fallback_name: Optional[str] = None, timezone_name: Optional[str] = None) -> ZoneInfo:
     preferred = timezone_name or (user or {}).get("timezone") or fallback_name or "UTC"

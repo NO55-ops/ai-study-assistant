@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const API = process.env.REACT_APP_BACKEND_URL + '/api';
+const backendBaseUrl = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '');
+const API = `${backendBaseUrl}/api`;
 
 const api = axios.create({
   baseURL: API,
@@ -19,6 +20,15 @@ function ensureQuizShape(obj) {
   if (!obj.quiz_data || !Array.isArray(obj.quiz_data.questions)) throw new Error('Quiz response missing questions array');
   return obj;
 }
+
+export const authService = {
+  requestPasswordReset: (email) => api.post('/auth/password-reset/request', { email }),
+  confirmPasswordReset: (email, token, newPassword) => api.post('/auth/password-reset/confirm', {
+    email,
+    token,
+    new_password: newPassword,
+  }),
+};
 
 export const documentService = {
   upload: (formData) => api.post('/documents/upload', formData),

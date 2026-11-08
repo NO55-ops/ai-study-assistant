@@ -1,9 +1,11 @@
 import React, { createContext, useState, useContext, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
+import { authService } from '../services/api';
 
 const AuthContext = createContext(null);
 
-const API = process.env.REACT_APP_BACKEND_URL + '/api';
+const backendBaseUrl = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '');
+const API = `${backendBaseUrl}/api`;
 
 export const formatApiErrorDetail = (detail) => {
   if (detail == null) return 'Something went wrong. Please try again.';
@@ -56,6 +58,24 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const requestPasswordReset = async (email) => {
+    try {
+      const { data } = await authService.requestPasswordReset(email);
+      return { success: true, message: data?.message || 'If an account exists, a reset link was sent.' };
+    } catch (e) {
+      return { success: false, error: formatApiErrorDetail(e.response?.data?.detail) || e.message };
+    }
+  };
+
+  const confirmPasswordReset = async (email, token, newPassword) => {
+    try {
+      const { data } = await authService.confirmPasswordReset(email, token, newPassword);
+      return { success: true, message: data?.message || 'Password reset successfully.' };
+    } catch (e) {
+      return { success: false, error: formatApiErrorDetail(e.response?.data?.detail) || e.message };
+    }
+  };
+
   const logout = async () => {
     try {
       await axios.post(`${API}/auth/logout`, {}, { withCredentials: true });
@@ -76,7 +96,7 @@ export const AuthProvider = ({ children }) => {
 }, [checkAuth]);
 
   const value = useMemo(
-    () => ({ user, loading, login, register, logout, checkAuth, completeOnboarding }),
+    () => ({ user, loading, login, register, requestPasswordReset, confirmPasswordReset, logout, checkAuth, completeOnboarding }),
     [user, loading, checkAuth, completeOnboarding]
   );
 
