@@ -1,0 +1,36 @@
+name: Frontend build (Vercel parity)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Production build with warnings as errors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Mirrors Vercel: root directory `frontend`, `npm run build`, output `build`.
+      # REACT_APP_BACKEND_URL is intentionally not set here: Vercel provides the real
+      # value, and a missing one must not make the build fail (the app shows a
+      # configuration error instead).
+      - name: Build exactly as Vercel does
+        run: npm run verify:build
+
+      - name: Assert the build output exists
+        run: test -f build/index.html
