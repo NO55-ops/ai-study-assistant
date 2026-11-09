@@ -5534,6 +5534,107 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _env_value(env: Dict[str, str], name: str) -> str:
+    return (env.get(name) or "").strip()
+
+
+def _is_enabled(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes")
+
+
+def _ai_provider_configured(env: Dict[str, str]) -> bool:
+    return any(
+        _env_value(env, name)
+        for name in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "OPENAI_BASE_URL")
+    )
+
+
+def _collect_config_issues(env: Optional[Dict[str, str]] = None) -> List[Dict[str, str]]:
+    """List production settings that are missing or still at development defaults.
+
+    Only variable names and human-readable reasons are returned, never values, so the
+    result is safe to log.
+    """
+    env = dict(os.environ) if env is None else env
+    issues: List[Dict[str, str]] = []
+
+    def add(name: str, message: str) -> None:
+        issues.append({"name": name, "message": message})
+
+    app_env = _env_value(env, "APP_ENV").lower()
+    if _env_value(env, "RENDER") and app_env != "production":
+        add("APP_ENV", "hosted deployment is not in production mode (set APP_ENV=production)")
+
+    for name in ("SUPABASE_URL", "SUPABASE_KEY"):
+        if not _env_value(env, name):
+            add(name, "not set - the API falls back to in-memory storage and data will not persist")
+
+    jwt_secret = _env_value(env, "JWT_SECRET")
+    if not jwt_secret:
+        add("JWT_SECRET", "not set - the API refuses to issue tokens in production")
+    elif jwt_secret == "development-fallback-secret":
+        add("JWT_SECRET", "still the development fallback - replace it with a long random secret")
+
+    cors_origins = [
+        origin.strip()
+        for origin in _env_value(env, "CORS_ORIGINS").split(",")
+        if origin.strip()
+    ]
+    if not cors_origins:
+        add("CORS_ORIGINS", "not set - only localhost origins are allowed, so the deployed frontend is blocked")
+    elif all("localhost" in origin or "127.0.0.1" in origin for origin in cors_origins):
+        add("CORS_ORIGINS", "only localhost origins are allowed, so the deployed frontend is blocked")
+
+    if not _is_enabled(_env_value(env, "COOKIE_SECURE")):
+        add(
+            "COOKIE_SECURE",
+            "not enabled - session cookies use SameSite=Lax and are not sent from a different-site frontend",
+        )
+
+    frontend_url = _env_value(env, "FRONTEND_URL")
+    if not frontend_url:
+        add("FRONTEND_URL", "not set - password-reset links point at http://localhost:3000")
+    elif "localhost" in frontend_url or "127.0.0.1" in frontend_url:
+        add("FRONTEND_URL", "still points at localhost - password-reset links will not reach users")
+
+    for name in ("RESEND_API_KEY", "PASSWORD_RESET_FROM"):
+        if not _env_value(env, name):
+            add(name, "not set - password-reset emails cannot be sent")
+
+    if not _ai_provider_configured(env):
+        add(
+            "OPENAI_API_KEY",
+            "no AI provider configured (set OPENAI_API_KEY, OPENROUTER_API_KEY or OPENAI_BASE_URL) - AI calls will fail",
+        )
+
+    return issues
+
+
+def _audit_startup_config(env: Optional[Dict[str, str]] = None) -> List[Dict[str, str]]:
+    """Log a startup warning for each missing or defaulted production setting."""
+    resolved_env = dict(os.environ) if env is None else env
+    app_env = _env_value(resolved_env, "APP_ENV").lower()
+
+    if app_env != "production" and not _env_value(resolved_env, "RENDER"):
+        return []
+
+    issues = _collect_config_issues(resolved_env)
+    if not issues:
+        logger.info("Startup configuration check passed: required production settings are configured.")
+        return []
+
+    logger.warning(
+        "Startup configuration check found %d required production setting(s) that are missing or still at development defaults:",
+        len(issues),
+    )
+    for issue in issues:
+        logger.warning("  - %s: %s", issue["name"], issue["message"])
+    logger.warning(
+        "Set these variables in the hosting dashboard (for Render: Environment) and redeploy. Secret values are never logged."
+    )
+    return issues
+
+
 async def seed_admin():
     app_env = (os.environ.get("APP_ENV") or "development").lower()
     admin_email = os.environ.get("ADMIN_EMAIL")
@@ -5572,6 +5673,7 @@ async def startup():
     logger.info(f"Local storage directory: {STORAGE_DIR}")
     logger.info(f"Using OpenRouter model: {OPENAI_MODEL}")
 
+    _audit_startup_config()
 
     await seed_admin()
 
