@@ -1,12 +1,17 @@
 import axios from 'axios';
+import { BACKEND_BASE_URL, BACKEND_URL_ERROR } from '../config/backend';
 
-const backendBaseUrl = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '');
-const API = `${backendBaseUrl}/api`;
+const API = `${BACKEND_BASE_URL}/api`;
 
 const api = axios.create({
   baseURL: API,
   withCredentials: true,
 });
+
+if (BACKEND_URL_ERROR) {
+  // Fail fast and loudly: never let a request silently target the user's own machine.
+  api.interceptors.request.use(() => Promise.reject(new Error(BACKEND_URL_ERROR)));
+}
 
 function ensureArray(value, name) {
   if (!Array.isArray(value)) {
