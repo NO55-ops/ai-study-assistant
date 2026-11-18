@@ -1,11 +1,11 @@
 import React, { createContext, useState, useContext, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
 import { authService } from '../services/api';
+import { BACKEND_BASE_URL } from '../config/backend';
 
 const AuthContext = createContext(null);
 
-const backendBaseUrl = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '');
-const API = `${backendBaseUrl}/api`;
+const API = `${BACKEND_BASE_URL}/api`;
 
 export const formatApiErrorDetail = (detail) => {
   if (detail == null) return 'Something went wrong. Please try again.';

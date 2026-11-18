@@ -25,6 +25,32 @@ import LibrarySubject from './pages/LibrarySubject';
 import LibraryTopic from './pages/LibraryTopic';
 import LibraryAdminEditor from './pages/LibraryAdminEditor';
 import './App.css';
+import { BACKEND_URL_ERROR } from './config/backend';
+
+const BackendConfigNotice = ({ message }) => (
+  <div
+    className="min-h-screen flex items-center justify-center px-4 noise-overlay"
+    style={{ background: 'var(--bg-main)' }}
+    data-testid="backend-config-error"
+  >
+    <div className="w-full max-w-xl bg-white rounded-2xl border-2 border-[#0A0A0A] neo-shadow p-8">
+      <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#FF5722]">Configuration error</p>
+      <h1
+        className="text-3xl font-black text-[#0A0A0A] mt-2 mb-3"
+        style={{ fontFamily: 'Outfit, sans-serif' }}
+      >
+        The app cannot reach the backend
+      </h1>
+      <p className="text-[#0A0A0A]" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        {message}
+      </p>
+      <p className="text-sm text-[#0A0A0A]/70 mt-4">
+        No API request was made and nothing was saved or lost — this is a build configuration problem,
+        not a problem with your account or data.
+      </p>
+    </div>
+  </div>
+);
 
 const GlobalNotesWidget = () => {
   const { user } = useAuth();
@@ -33,6 +59,10 @@ const GlobalNotesWidget = () => {
 };
 
 function App() {
+  if (BACKEND_URL_ERROR) {
+    return <BackendConfigNotice message={BACKEND_URL_ERROR} />;
+  }
+
   return (
     <ThemeProvider>
       <AuthProvider>

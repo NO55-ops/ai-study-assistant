@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { documentService, aiService } from '../services/api';
 import { HelpCircle, Check, X, Clock3, ChevronLeft, ChevronRight, Flag, Send } from 'lucide-react';
@@ -6,6 +6,16 @@ import { toast } from 'sonner';
 import StudyWorkspace from '../components/StudyWorkspace';
 
 const STORAGE_PREFIX = 'mock_exam_answers_';
+const HISTORY_KEY = 'mock_exam_history';
+
+const readStoredAttempts = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+};
 
 const defaultConfig = {
   difficulty: 'mixed',
@@ -55,6 +65,8 @@ const Quiz = () => {
   const [timeRemaining, setTimeRemaining] = useState(45 * 60);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
+  const [previousAttempts, setPreviousAttempts] = useState(readStoredAttempts);
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     const fetchDocs = async () => {
@@ -100,12 +112,6 @@ const Quiz = () => {
     }, 1000);
     return () => clearInterval(timer);
   }, [exam, result]);
-
-  useEffect(() => {
-    if (exam && timeRemaining === 0 && !result) {
-      handleSubmit(true);
-    }
-  }, [timeRemaining, exam, result]);
 
   useEffect(() => {
     if (!exam) return;
@@ -202,41 +208,44 @@ const Quiz = () => {
     });
   };
 
-  const handleSubmit = async (autoSubmit = false) => {
-    if (!exam) return;
+  const handleSubmit = useCallback(async (autoSubmit = false) => {
+    if (!exam || submittingRef.current) return;
     if (!autoSubmit && !window.confirm('Submit this mock exam now?')) return;
 
+    submittingRef.current = true;
     setSubmitting(true);
     try {
       const { data } = await aiService.submitMockExam({ exam_id: exam.id, answers });
       setResult(data);
       setShowResults(true);
-      const historyKey = 'mock_exam_history';
-      const previousAttempts = JSON.parse(localStorage.getItem(historyKey) || '[]');
-      previousAttempts.push({
-        exam_id: exam.id,
-        percentage: data.percentage,
-        total_marks: data.total_marks,
-        max_marks: data.max_marks,
-        created_at: new Date().toISOString(),
-      });
-      localStorage.setItem(historyKey, JSON.stringify(previousAttempts.slice(-5)));
+      const history = [
+        ...readStoredAttempts(),
+        {
+          exam_id: exam.id,
+          percentage: data.percentage,
+          total_marks: data.total_marks,
+          max_marks: data.max_marks,
+          created_at: new Date().toISOString(),
+        },
+      ].slice(-5);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+      setPreviousAttempts(history);
       localStorage.removeItem(`${STORAGE_PREFIX}${exam.id}`);
       toast.success(autoSubmit ? 'Time expired. Your exam has been submitted.' : `Submitted! You scored ${data.percentage}%`);
     } catch (error) {
       toast.error(error?.response?.data?.detail || 'Unable to submit the exam.');
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
-  };
+  }, [exam, answers]);
 
-  const previousAttempts = useMemo(() => {
-    try {
-      return JSON.parse(localStorage.getItem('mock_exam_history') || '[]');
-    } catch (error) {
-      return [];
+  // Auto-submit once the timer hits zero. Declared after handleSubmit so the dependency is initialized.
+  useEffect(() => {
+    if (exam && timeRemaining === 0 && !result) {
+      handleSubmit(true);
     }
-  }, [result]);
+  }, [timeRemaining, exam, result, handleSubmit]);
 
   const allTypes = ['multiple_choice', 'short_answer', 'structured'];
   const difficulties = ['easy', 'medium', 'hard', 'mixed'];

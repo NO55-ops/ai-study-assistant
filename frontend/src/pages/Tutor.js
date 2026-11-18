@@ -4,6 +4,7 @@ import { documentService } from '../services/api';
 import { Brain, Send } from 'lucide-react';
 import { toast } from 'sonner';
 import StudyWorkspace from '../components/StudyWorkspace';
+import { BACKEND_BASE_URL } from '../config/backend';
 
 const Tutor = () => {
   const [searchParams] = useSearchParams();
@@ -60,8 +61,7 @@ const Tutor = () => {
     setMessages((prev) => [...prev, aiMessage]);
 
     try {
-      const backendBaseUrl = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '');
-      const API = `${backendBaseUrl}/api`;
+      const API = `${BACKEND_BASE_URL}/api`;
       const response = await fetch(`${API}/ai/tutor`, {
         method: 'POST',
         headers: {

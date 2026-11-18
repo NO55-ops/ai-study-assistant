@@ -64,6 +64,7 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
+    "verify:build": "node scripts/verify-vercel-build.js",
     "test": "craco test"
   },
   "browserslist": {

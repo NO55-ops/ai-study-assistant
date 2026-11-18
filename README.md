@@ -85,6 +85,18 @@ yarn start
 
 The app is now live at `http://localhost:3000`.
 
+### Before pushing
+
+Run the same production build Vercel runs. It fails on any ESLint warning, including
+`react-hooks/exhaustive-deps`, so deployment failures are caught before you push:
+
+```bash
+cd frontend
+npm run verify:build
+```
+
+The same check runs in CI on every push and pull request (`.github/workflows/frontend-build.yml`).
+
 ## Setup — MongoDB
 
 ### Option A: Local MongoDB
